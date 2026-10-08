@@ -103,9 +103,27 @@ async function runBridge({ runtime, worktreePath, args }) {
     }
     render()
   }
-  const buffer = createLineBuffer((line) => { handle(line).catch(() => {}) }, (control) => { if (control === 'interrupt' || control === 'eof') shutdown() })
+  const reregister = async () => {
+    const live = await ensureServer({ homeDir: defaultHomeDir(), serverEntry: join(pluginRootFromModuleUrl(import.meta.url), 'server', 'main.mjs') })
+    if (live.pid !== registeredPid) { await apiCall(live, '/api/bridge/register', registration); registeredPid = live.pid; lastStatus = `서버 재기동 감지 → 재등록 ${new Date().toLocaleTimeString()}`; render() }
+  }
+  // Heartbeat: the server may restart (idle shutdown, upgrade) while the panel cannot reach us; re-register on our own.
+  const heartbeat = setInterval(() => { reregister().catch((error) => { lastStatus = `서버 확인 실패: ${error.message}`; render() }) }, 30_000)
+  heartbeat.unref?.()
+  const buffer = createLineBuffer((line) => {
+    // The panel's "브리지 시작" may be typed into an already-running bridge: treat it as a re-register request.
+    if (line.includes('open-review') && line.includes('--bridge')) {
+      const match = /--panel-terminal\s+(\S+)/.exec(line)
+      if (match) registration.panelTerminalId = match[1]
+      registeredPid = null
+      reregister().catch((error) => { lastStatus = `재등록 실패: ${error.message}`; render() })
+      return
+    }
+    handle(line).catch(() => {})
+  }, (control) => { if (control === 'interrupt' || control === 'eof') shutdown() })
   const shutdown = () => {
-    apiCall(runtime, '/api/bridge/unregister', { worktreePath }).catch(() => {}).finally(() => {
+    clearInterval(heartbeat)
+    apiCall(runtime, '/api/bridge/unregister', { worktreePath, terminalHandle: registration.terminalHandle, panelTerminalId: registration.panelTerminalId, ptyId: registration.ptyId }).catch(() => {}).finally(() => {
       if (process.stdin.isTTY) process.stdin.setRawMode(false)
       process.stdout.write('\n브리지를 종료했습니다.\n')
       process.exit(0)

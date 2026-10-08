@@ -410,7 +410,14 @@ export function createServer({
         return sendJson(response, 200, { ok: true, worktreePath: body.worktreePath, terminalIds: bridges[body.worktreePath].terminalIds })
       }
       if (segments[1] === 'unregister' && method === 'POST') {
-        if (typeof body.worktreePath === 'string') { delete bridges[body.worktreePath]; saveBridges(); publishPanel('bridge') }
+        if (typeof body.worktreePath === 'string' && bridges[body.worktreePath]) {
+          const removing = new Set([body.terminalHandle, body.panelTerminalId, body.ptyId].filter((id) => typeof id === 'string' && id))
+          const remaining = bridges[body.worktreePath].terminalIds.filter((id) => !removing.has(id))   // no ids → nothing removed
+          if (remaining.length === 0) delete bridges[body.worktreePath]
+          else bridges[body.worktreePath] = { ...bridges[body.worktreePath], terminalIds: remaining }
+          saveBridges()
+          publishPanel('bridge')
+        }
         return sendJson(response, 200, { ok: true })
       }
       if (segments.length === 1 && method === 'POST') return sendJson(response, 200, { ok: true, result: await dispatchBridgeOp(body) })

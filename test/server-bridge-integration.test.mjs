@@ -72,6 +72,14 @@ test('bridge register binds terminal ids to a worktree and shows up in panel dat
   assert.deepEqual(data.worktrees[0].bridgeTerminalIds.sort(), ['pty_bridge', 'term_bridge'])
 })
 
+test('bridge unregister removes only the given terminal ids, keeping other live bridges', async () => {
+  await api('POST', '/api/bridge/register', { worktreePath: repo, terminalHandle: 'term_second', panelTerminalId: null, ptyId: 'pty_second' })
+  const removed = await api('POST', '/api/bridge/unregister', { worktreePath: repo, terminalHandle: 'term_second', ptyId: 'pty_second' })
+  assert.equal(removed.status, 200)
+  await server.settlePanel()
+  assert.deepEqual(readPanelData().worktrees[0].bridgeTerminalIds.sort(), ['pty_bridge', 'term_bridge'])
+})
+
 test('bridge ops create a session, add a thread, keep view state without regenerating, and open the wide view', async () => {
   const opened = await api('POST', '/api/bridge', { op: 'session.open', worktreePath: repo })
   assert.equal(opened.status, 200)
