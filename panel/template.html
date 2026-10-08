@@ -98,14 +98,14 @@
 /*__INLINE:threads__*/
 
 // ------------------------------------------------------------------ data
-const TEMPLATE_VERSION = 'v12'
+const TEMPLATE_VERSION = 'v13'
 let DATA = JSON.parse(document.getElementById('orca-panel-data').textContent || '{}')
 const PREVIEW = window.parent === window                       // opened in a normal browser (server /panel-preview)
 const PREVIEW_TOKEN = document.querySelector('meta[name="sr-token"]')?.content ?? null
 let CONTEXT = null                                             // { displayName, branch, terminals: [{id}] }
 let ROUTE = 'review'                                            // 'review' | 'overview'
 let ACTIVE_WORKTREE = null                                      // worktree entry from DATA.worktrees
-const UI = { pendingThreads: [], pendingReplies: {}, sending: false, collapsedFiles: new Set(), filesCollapsed: true, file: null, selection: null, dragging: false, pendingForm: false, expanded: new Set(), draft: '', drafts: {}, scrollRestored: false, picker: null, lastMessage: '' }
+const UI = { runLogOpen: false, pendingThreads: [], pendingReplies: {}, sending: false, collapsedFiles: new Set(), filesCollapsed: true, file: null, selection: null, dragging: false, pendingForm: false, expanded: new Set(), draft: '', drafts: {}, scrollRestored: false, picker: null, lastMessage: '' }
 
 function escapeHtml(value) { return String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char])) }
 class Raw { constructor(html) { this.html = html } }
@@ -344,7 +344,7 @@ function renderReview(session) {
       <div class="muted small" style="margin-top:4px">번호 거터를 드래그/Shift+클릭해 여러 줄을 고르세요 (최대 200줄).</div>
     </div></div>
     ${raw(bridgeStatusHtml())}
-    ${raw(run ? h`<div class="run"><div class="card-head">AI 수정 <span class="badge">${run.status}</span><span class="muted small">${run.agent} · 스레드 ${run.threadIds.length}${run.exitCode !== null && run.exitCode !== undefined ? ' · exit ' + run.exitCode : ''}</span><span style="flex:1"></span>${live ? raw(h`<button type="button" class="btn small danger" id="cancelRun" data-run="${run.id}">취소</button>`) : ''}</div>${run.changedFiles?.length ? raw(h`<div class="card-body small"><strong>변경 파일</strong> ${run.changedFiles.join(', ')}</div>`) : ''}<details><summary class="small" style="padding:4px 8px">로그</summary><pre>${run.logTail || '(없음)'}</pre></details></div>` : '')}
+    ${raw(run ? h`<div class="run"><div class="card-head">AI 수정 <span class="badge">${run.status}</span><span class="muted small">${run.agent} · 스레드 ${run.threadIds.length}${run.exitCode !== null && run.exitCode !== undefined ? ' · exit ' + run.exitCode : ''}</span><span style="flex:1"></span>${live ? raw(h`<button type="button" class="btn small danger" id="cancelRun" data-run="${run.id}">취소</button>`) : ''}</div>${run.changedFiles?.length ? raw(h`<div class="card-body small"><strong>변경 파일</strong> ${run.changedFiles.join(', ')}</div>`) : ''}<details id="runLog" ${raw(UI.runLogOpen ? 'open' : '')}><summary class="small" style="padding:4px 8px">로그</summary><pre>${run.logTail || '(없음)'}</pre></details></div>` : '')}
     <div class="card ${UI.filesCollapsed ? 'files-collapsed' : ''}"><div class="card-head"><span id="fileListHead" style="cursor:pointer">파일 ${files.length} <span class="muted small">${UI.filesCollapsed ? '목록 펼치기' : '목록 접기'}</span></span><span style="flex:1"></span><button type="button" class="btn ghost small" id="collapseAll">모두 접기</button><button type="button" class="btn ghost small" id="expandAll">모두 펼치기</button></div><div class="card-body file-list-body" style="padding:4px">
       ${raw(files.length === 0 ? '<div class="muted">변경 사항이 없습니다.</div>' : files.map((f) => h`<div class="file-item" data-file="${f.path}" title="${f.path}"><span class="badge">${{ added: 'A', modified: 'M', deleted: 'D', renamed: 'R', untracked: 'U' }[f.changeType] || '?'}</span><span class="name mono">${f.path}</span><span class="small"><span class="add-count">+${f.additions}</span> <span class="del-count">−${f.deletions}</span>${counts[f.path] ? ' 💬' + counts[f.path] : ''}</span></div>`).join(''))}
     </div></div>
@@ -356,6 +356,7 @@ function renderReview(session) {
   app.querySelector('#runFix').addEventListener('click', () => act(() => send({ op: 'run.start', sessionId: s.id, revision: s.revision, agent: s.agent })))
   app.querySelector('#completeSession').addEventListener('click', () => { const open = s.threads.filter((t) => t.status === 'open').length; if (open === 0 || confirm(`열린 스레드가 ${open}개 남아 있습니다. 완료할까요?`)) act(() => send({ op: 'session.complete', sessionId: s.id })) })
   app.querySelector('#cancelRun')?.addEventListener('click', (e) => act(() => send({ op: 'run.cancel', runId: e.currentTarget.dataset.run })))
+  app.querySelector('#runLog')?.addEventListener('toggle', (e) => { UI.runLogOpen = e.target.open })
   app.querySelector('#fileListHead').addEventListener('click', () => { UI.filesCollapsed = !UI.filesCollapsed; render({ keepScroll: true }) })
   app.querySelector('#collapseAll').addEventListener('click', () => { for (const f of files) UI.collapsedFiles.add(f.path); renderFile(session) })
   app.querySelector('#expandAll').addEventListener('click', () => { UI.collapsedFiles.clear(); renderFile(session) })
@@ -535,6 +536,7 @@ function bindThreadHandlers(host, s) {
     // Optimistic: show the comment in place right away and close the form; the regenerated panel replaces it.
     const placeholder = { id: 'pending_' + Date.now(), pending: true, path: selection.path, side: selection.side, startLine, endLine, status: 'open', applicability: 'current', comments: [{ id: 'p', body }] }
     UI.pendingThreads.push(placeholder)
+    textarea.value = ''                       // must happen before refreshFile(): saveDraft() reads the live textarea
     UI.selection = null; UI.pendingForm = false; UI.draft = ''
     UI.sending = true
     refreshFile(selection.path)
@@ -556,6 +558,7 @@ function bindThreadHandlers(host, s) {
     const body = ta.value
     const thread = s.threads.find((t) => t.id === threadId)
     UI.pendingReplies[threadId] = [...(UI.pendingReplies[threadId] || []), body]
+    ta.value = ''                             // before refreshFile(): saveDraft() would otherwise re-capture the sent text
     delete UI.drafts[threadId]
     UI.sending = true
     if (thread) refreshFile(thread.path)
@@ -624,7 +627,10 @@ async function act(operation, onSuccess) {
 function saveDraft() {
   const ta = document.getElementById('newComment')
   if (ta) UI.draft = ta.value
-  for (const el of document.querySelectorAll('[data-reply-text]')) if (el.value) UI.drafts[el.dataset.replyText] = el.value
+  for (const el of document.querySelectorAll('[data-reply-text]')) {
+    if (el.value) UI.drafts[el.dataset.replyText] = el.value
+    else delete UI.drafts[el.dataset.replyText]
+  }
 }
 function restoreDraft() {
   for (const el of document.querySelectorAll('[data-reply-text]')) if (UI.drafts[el.dataset.replyText]) el.value = UI.drafts[el.dataset.replyText]
