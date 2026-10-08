@@ -300,7 +300,11 @@ export function createServer({
     for (const run of runList) {
       if (runsBySession[run.sessionId]) continue
       const { log } = runs.readLog(run.id, 0)
-      runsBySession[run.sessionId] = { ...run, fingerprintsBefore: undefined, logTail: log.slice(-PANEL_LOG_TAIL_BYTES) }
+      let aiChanges = null
+      if (run.status !== 'running' && run.status !== 'queued' && (run.changedFiles || []).length && run.cwd && existsSync(run.cwd)) {
+        try { aiChanges = trimFilesForPanel(await git.workingTreeChangesFor(run.cwd, run.changedFiles)) } catch (error) { aiChanges = { error: error.message } }
+      }
+      runsBySession[run.sessionId] = { ...run, fingerprintsBefore: undefined, logTail: log.slice(-PANEL_LOG_TAIL_BYTES), aiChanges }
     }
     if (reason !== 'run-progress' || !lastOverview) {
       try { lastOverview = await overview() } catch (error) { lastOverview = { repos: [], sessions: sessionList, github: { enabled: false, lastFetchedAt: null, errors: [{ repo: '(orca)', message: error.message }] } } }
