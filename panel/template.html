@@ -160,7 +160,7 @@ async function send(op, { silent = false } = {}) {
     const response = await fetch('/api/bridge', { method: 'POST', headers: { 'X-SR-Token': PREVIEW_TOKEN, 'Content-Type': 'application/json' }, body: JSON.stringify(op) })
     const payload = await response.json().catch(() => null)
     if (!response.ok) throw new Error(payload?.error?.message || ('HTTP ' + response.status))
-    if (op.op !== 'view') await previewReload()
+    if (op.op !== 'view' || op.loadFile) await previewReload()
     return payload?.result
   }
   const terminalId = bridgeTerminalId()
