@@ -1,0 +1,13 @@
+{
+  "name": "orca-local-self-review",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Orca plugin: local self review before opening a PR (GitHub-style diff review, multi-line comments, Claude/Codex fixes). Zero runtime dependencies.",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "serve": "node server/main.mjs --foreground",
+    "check": "node --check worker/main.mjs && node --check server/main.mjs"
+  }
+}
