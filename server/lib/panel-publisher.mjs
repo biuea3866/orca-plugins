@@ -10,8 +10,9 @@ export const PANEL_FILE_LINE_CAP = 3000
 export const PANEL_LOG_TAIL_BYTES = 16 * 1024
 
 export class PanelPublisher {
-  constructor({ pluginRoot, collect, debounceMs = 150, log = () => {} }) {
+  constructor({ pluginRoot, outputRoot = pluginRoot, collect, debounceMs = 150, log = () => {} }) {
     this.pluginRoot = pluginRoot
+    this.outputRoot = outputRoot
     this.collect = collect
     this.debounceMs = debounceMs
     this.log = log
@@ -22,7 +23,7 @@ export class PanelPublisher {
   }
 
   templatePath() { return join(this.pluginRoot, 'panel', 'template.html') }
-  outputPath() { return join(this.pluginRoot, 'panel', 'index.html') }
+  outputPath() { return join(this.outputRoot, 'panel', 'index.html') }
 
   readModules() {
     const modules = {}
@@ -61,7 +62,7 @@ export class PanelPublisher {
       html = buildPanelDocument({ template: readFileSync(this.templatePath(), 'utf8'), data: { ...data, sessions: {}, oversized: true }, modules: this.readModules() })
     }
     if (html === this.lastHtml) return false
-    mkdirSync(join(this.pluginRoot, 'panel'), { recursive: true })
+    mkdirSync(join(this.outputRoot, 'panel'), { recursive: true })
     const tmpPath = `${this.outputPath()}.tmp`
     writeFileSync(tmpPath, html)
     renameSync(tmpPath, this.outputPath())

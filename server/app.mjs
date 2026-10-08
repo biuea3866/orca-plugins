@@ -60,7 +60,8 @@ export function createServer({
   now = () => new Date().toISOString(),
   enrichEnvironment = true,
   exitImpl = (code) => process.exit(code),
-  panelDebounceMs = 150
+  panelDebounceMs = 150,
+  panelRoot = pluginRoot
 }) {
   if (enrichEnvironment) enrichPath(process.env)
   mkdirSync(homeDir, { recursive: true, mode: 0o700 })
@@ -83,7 +84,7 @@ export function createServer({
   const viewState = {}                                 // sessionId → { route, file, scroll }
   let lastOverview = null
   let runPollTimer = null
-  const publisher = new PanelPublisher({ pluginRoot, debounceMs: panelDebounceMs, collect: collectPanelData, log: (message) => process.stderr.write(`${message}\n`) })
+  const publisher = new PanelPublisher({ pluginRoot, outputRoot: panelRoot, debounceMs: panelDebounceMs, collect: collectPanelData, log: (message) => process.stderr.write(`${message}\n`) })
   let lastActivity = Date.now()
   let idleTimer = null
   let httpServer = null
@@ -355,7 +356,7 @@ export function createServer({
     if (path === '/panel-preview') {
       touch()
       await publisher.settle()
-      const panelPath = join(pluginRoot, 'panel', 'index.html')
+      const panelPath = join(panelRoot, 'panel', 'index.html')
       const html = (existsSync(panelPath) ? readFileSync(panelPath, 'utf8') : PLACEHOLDER_HTML).replace(/<head>/i, `<head>\n<meta name="sr-token" content="${token}">`)
       response.writeHead(200, { 'Content-Type': CONTENT_TYPES['.html'], 'Cache-Control': 'no-store' })
       return response.end(html)

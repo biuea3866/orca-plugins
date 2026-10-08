@@ -52,7 +52,8 @@ const agentCommands = {
   codex: { command: process.execPath, args: [fakeAgent], env: { FAKE_AGENT_SLEEP_MS: '5000' } }
 }
 
-const server = createServer({ homeDir, pluginRoot, runners, agentCommands, preferredPort: 0, idleMs: 0, exitImpl: () => {} })
+const panelRoot = mkdtempSync(join(tmpdir(), 'sr-panel-'))
+const server = createServer({ homeDir, pluginRoot, panelRoot, runners, agentCommands, preferredPort: 0, idleMs: 0, exitImpl: () => {}, panelDebounceMs: 0 })
 await server.listen()
 const base = `http://127.0.0.1:${server.port}`
 const headers = { 'X-SR-Token': server.token, 'Content-Type': 'application/json' }
