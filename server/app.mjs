@@ -9,7 +9,7 @@ import { ApiError, SessionStore, summarizeSession, writeJsonAtomic } from './lib
 import { GitReader, readRepoFileLines } from './lib/git.mjs'
 import { OrcaReader } from './lib/orca.mjs'
 import { GitHubReader, parseGitHubRemote } from './lib/github.mjs'
-import { RunManager, defaultAgentCommands, pickRunToShow } from './lib/runs.mjs'
+import { RunManager, defaultAgentCommands, pickRunToShow, filterIgnoredChanges } from './lib/runs.mjs'
 import { annotateThreads } from './lib/anchor.mjs'
 import { buildPrompt, selectRunnableThreads } from './lib/prompt.mjs'
 import { parseUnifiedDiff } from './lib/diff-parser.mjs'
@@ -301,11 +301,12 @@ export function createServer({
     const bySession = new Map()
     for (const run of runList) { if (!bySession.has(run.sessionId)) bySession.set(run.sessionId, []); bySession.get(run.sessionId).push(run) }
     for (const [sessionId, sessionRuns] of bySession) {
-      const run = pickRunToShow(sessionRuns)
+      const cleaned = sessionRuns.map((entry) => ({ ...entry, changedFiles: filterIgnoredChanges(entry.changedFiles || [], entry.cwd || '/', [join(panelRoot, 'panel.html')]) }))
+      const run = pickRunToShow(cleaned)
       if (!run) continue
       const { log } = runs.readLog(run.id, 0)
       let aiChanges = null
-      if (run.status !== 'running' && run.status !== 'queued' && (run.changedFiles || []).length && run.cwd && existsSync(run.cwd)) {
+      if (run.status !== 'running' && run.status !== 'queued' && run.changedFiles.length && run.cwd && existsSync(run.cwd)) {
         try { aiChanges = trimFilesForPanel(await git.workingTreeChangesFor(run.cwd, run.changedFiles)) } catch (error) { aiChanges = { error: error.message } }
       }
       runsBySession[run.sessionId] = { ...run, fingerprintsBefore: undefined, logTail: log.slice(-PANEL_LOG_TAIL_BYTES), aiChanges }

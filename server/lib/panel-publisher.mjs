@@ -8,6 +8,8 @@ import { buildPanelDocument } from './panel-document.mjs'
 export const PANEL_MAX_BYTES = 6 * 1024 * 1024
 /** Hard cap for the JSON data block: the patched Orca host rejects panel data above 1MB. */
 export const PANEL_DATA_MAX_BYTES = 900 * 1024
+/** Budget for the AI-change diffs carried inside run cards (all sessions together). */
+export const PANEL_RUNS_MAX_BYTES = 200 * 1024
 export const PANEL_FILE_LINE_CAP = 3000
 export const PANEL_LOG_TAIL_BYTES = 16 * 1024
 
@@ -58,10 +60,12 @@ export class PanelPublisher {
 
   async publish(reason) {
     if (!existsSync(this.templatePath())) return false
-    const data = await this.collect(reason)
+    let data = await this.collect(reason)
     let html = buildPanelDocument({ template: readFileSync(this.templatePath(), 'utf8'), data, modules: this.readModules() })
+    data = { ...data, runs: fitRunsToBudget(data.runs ?? {}, { budgetBytes: PANEL_RUNS_MAX_BYTES }) }
+    html = buildPanelDocument({ template: readFileSync(this.templatePath(), 'utf8'), data, modules: this.readModules() })
     if (Buffer.byteLength(JSON.stringify(data)) > PANEL_DATA_MAX_BYTES) {
-      const slimRuns = Object.fromEntries(Object.entries(data.runs ?? {}).map(([id, run]) => [id, { ...run, logTail: '' }]))
+      const slimRuns = Object.fromEntries(Object.entries(data.runs ?? {}).map(([id, run]) => [id, { ...run, logTail: '', aiChanges: Array.isArray(run.aiChanges) ? run.aiChanges.map((file) => ({ ...file, hunks: [], panelTruncated: true })) : run.aiChanges }]))
       let slim = { ...data, runs: slimRuns }
       if (Buffer.byteLength(JSON.stringify(slim)) > PANEL_DATA_MAX_BYTES) slim = { ...slim, sessions: fitSessionsToBudget(slim.sessions, slim.viewState, { budgetBytes: PANEL_DATA_MAX_BYTES / 2 }) }
       if (Buffer.byteLength(JSON.stringify(slim)) > PANEL_DATA_MAX_BYTES) slim = { ...slim, sessions: {}, oversized: true }
@@ -131,4 +135,26 @@ export function stableIdentity(html) {
       return match
     }
   })
+}
+
+/** Trims the AI-change diffs inside run entries to a shared byte budget (smallest files first). */
+export function fitRunsToBudget(runs, { budgetBytes = PANEL_RUNS_MAX_BYTES } = {}) {
+  const result = {}
+  let remaining = budgetBytes
+  const entries = Object.entries(runs)
+  // measure everything except hunks first
+  for (const [id, run] of entries) {
+    const base = { ...run, aiChanges: Array.isArray(run.aiChanges) ? run.aiChanges.map((file) => ({ ...file, hunks: [] })) : run.aiChanges }
+    remaining -= JSON.stringify(base).length
+    result[id] = base
+  }
+  const candidates = []
+  for (const [id, run] of entries) if (Array.isArray(run.aiChanges)) run.aiChanges.forEach((file, index) => candidates.push({ id, index, cost: JSON.stringify(file.hunks).length }))
+  candidates.sort((left, right) => left.cost - right.cost)
+  for (const candidate of candidates) {
+    const file = runs[candidate.id].aiChanges[candidate.index]
+    if (candidate.cost <= remaining) { result[candidate.id].aiChanges[candidate.index] = file; remaining -= candidate.cost }
+    else result[candidate.id].aiChanges[candidate.index] = { ...file, hunks: [], panelTruncated: true }
+  }
+  return result
 }
