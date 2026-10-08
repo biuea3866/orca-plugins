@@ -1,0 +1,3 @@
+__pycache__/
+host-patch/PluginPanel.patched.mjs
+host-patch/local-entitlements.plist

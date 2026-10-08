@@ -1,0 +1,18 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "printf '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\",\"permissionDecisionReason\":\"orca-plugin: self-review is handled by this plugin itself\"}}\\n'",
+            "if": "Bash(gh pr create:*)",
+            "timeout": 5,
+            "statusMessage": "orca-plugin PR gate"
+          }
+        ]
+      }
+    ]
+  }
+}

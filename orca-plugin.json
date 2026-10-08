@@ -1,0 +1,65 @@
+{
+  "manifestVersion": 1,
+  "id": "local-self-review",
+  "publisher": "biuea",
+  "name": "Local Self Review",
+  "version": "0.1.0",
+  "description": "PR 생성 전 로컬 셀프 리뷰. GitHub 스타일 diff 리뷰·멀티라인 코멘트·Claude/Codex 자동 수정. GitHub에는 어떤 기록도 남기지 않습니다.",
+  "author": {
+    "name": "biuea"
+  },
+  "engines": {
+    "orca": ">=1.4.200"
+  },
+  "pluginApi": 1,
+  "main": "worker/main.mjs",
+  "contributes": {
+    "panels": [
+      {
+        "id": "self-review",
+        "title": "Self Review",
+        "icon": "git-pull-request",
+        "entry": "panel.html"
+      }
+    ],
+    "commands": [
+      {
+        "id": "open-review",
+        "title": "Self Review: 현재 worktree 리뷰 (우측 패널)",
+        "context": "worktree"
+      },
+      {
+        "id": "open-overview",
+        "title": "Self Review: 전체 PR·세션 목록 (우측 패널)",
+        "context": "global"
+      },
+      {
+        "id": "open-wide",
+        "title": "Self Review: 넓은 화면으로 열기 (내장 브라우저)",
+        "context": "worktree"
+      },
+      {
+        "id": "stop-server",
+        "title": "Self Review: 로컬 서버 종료",
+        "context": "global"
+      }
+    ]
+  },
+  "capabilities": [
+    {
+      "kind": "workspace:read"
+    },
+    {
+      "kind": "terminal:send"
+    },
+    {
+      "kind": "notifications:show"
+    },
+    {
+      "kind": "storage"
+    },
+    {
+      "kind": "settings:own"
+    }
+  ]
+}

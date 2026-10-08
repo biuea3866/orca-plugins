@@ -1,0 +1,598 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>Self Review</title>
+<style>
+  :root { color-scheme: light dark; --sr-add: rgba(46, 160, 67, .18); --sr-del: rgba(248, 81, 73, .18); --sr-sel: rgba(255, 204, 0, .28); --sr-hunk: rgba(56, 139, 253, .12); }
+  html, body { margin: 0; padding: 0; background: var(--background); color: var(--foreground); }
+  body { font: 12.5px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  * { box-sizing: border-box; }
+  button, select, textarea, input { font: inherit; color: inherit; }
+  .btn { border: 1px solid var(--border); background: var(--secondary); color: var(--secondary-foreground); border-radius: var(--radius, 6px); padding: 3px 8px; cursor: pointer; font-size: 12px; }
+  .btn.primary { background: var(--primary); color: var(--primary-foreground); border-color: transparent; font-weight: 600; }
+  .btn.danger { background: var(--destructive); color: var(--destructive-foreground); border-color: transparent; }
+  .btn.ghost { background: transparent; }
+  .btn:disabled { opacity: .45; cursor: default; }
+  .btn:focus-visible, select:focus-visible, textarea:focus-visible, .gutter:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+  select { background: var(--background); border: 1px solid var(--input); border-radius: var(--radius, 6px); padding: 2px 6px; max-width: 100%; }
+  textarea { width: 100%; min-height: 64px; background: var(--background); border: 1px solid var(--input); border-radius: var(--radius, 6px); padding: 6px; resize: vertical; }
+  .muted { color: var(--muted-foreground); }
+  .small { font-size: 11px; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; }
+  .row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .badge { display: inline-block; font-size: 10.5px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--border); background: var(--accent); color: var(--accent-foreground); white-space: nowrap; }
+  .badge.warn { background: var(--sr-sel); border-color: transparent; }
+  .card { background: var(--card); color: var(--card-foreground); border: 1px solid var(--border); border-radius: var(--radius, 6px); margin: 8px; }
+  .card-head { padding: 6px 10px; border-bottom: 1px solid var(--border); font-weight: 600; display: flex; align-items: center; gap: 6px; }
+  .card-body { padding: 6px 10px; }
+  .notice { margin: 8px; padding: 6px 10px; border-radius: var(--radius, 6px); background: var(--sr-sel); color: var(--foreground); font-size: 12px; }
+  .notice.error { background: var(--sr-del); }
+  .topbar { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: 6px; padding: 6px 8px; background: var(--card); border-bottom: 1px solid var(--border); }
+  .topbar .title { font-weight: 700; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tabs { display: flex; gap: 2px; padding: 6px 8px 0; border-bottom: 1px solid var(--border); }
+  .tab { padding: 4px 10px; border: 1px solid transparent; border-bottom: 0; border-radius: 6px 6px 0 0; cursor: pointer; background: transparent; color: var(--muted-foreground); }
+  .tab.active { background: var(--card); border-color: var(--border); color: var(--foreground); font-weight: 600; }
+  .list-item { display: flex; align-items: center; gap: 6px; padding: 4px 0; border-top: 1px solid var(--border); }
+  .list-item:first-child { border-top: 0; }
+  .list-item .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pr-title { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file-item { display: flex; align-items: center; gap: 6px; padding: 3px 6px; border-radius: 4px; cursor: pointer; }
+  .file-item:hover { background: var(--accent); }
+  .file-item.active { background: var(--accent); font-weight: 600; }
+  .file-item .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+  .diff { width: 100%; border-collapse: collapse; table-layout: fixed; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; line-height: 18px; }
+  .diff col.g { width: 44px; } .diff col.m { width: 12px; }
+  .diff td { padding: 0; vertical-align: top; }
+  .diff .gutter { text-align: right; padding-right: 5px; color: var(--muted-foreground); user-select: none; cursor: pointer; background: var(--card); white-space: nowrap; }
+  .diff .gutter.disabled { cursor: default; opacity: .4; }
+  .diff .gutter:hover:not(.disabled) { color: var(--primary); font-weight: 700; }
+  .diff .marker { text-align: center; color: var(--muted-foreground); user-select: none; }
+  .diff .code { white-space: pre-wrap; word-break: break-all; padding: 0 6px; }
+  .diff tr.add .code, .diff tr.add .marker { background: var(--sr-add); }
+  .diff tr.del .code, .diff tr.del .marker { background: var(--sr-del); }
+  .diff tr.hunk td { background: var(--sr-hunk); color: var(--muted-foreground); padding: 1px 6px; font-size: 10.5px; }
+  .diff tr.selected .code, .diff tr.selected .marker, .diff tr.selected .gutter { background: var(--sr-sel) !important; }
+  .diff tr.thread-row td { padding: 6px 6px 6px 10px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 12px; }
+  .thread { border: 1px solid var(--border); border-radius: var(--radius, 6px); background: var(--popover); color: var(--popover-foreground); margin: 4px 0; }
+  .thread-head { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-bottom: 1px solid var(--border); font-size: 11px; color: var(--muted-foreground); flex-wrap: wrap; }
+  .thread-head .grow { flex: 1; }
+  .thread.resolved .thread-body { display: none; }
+  .thread.resolved.expanded .thread-body { display: block; }
+  .comment { padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  .comment:last-of-type { border-bottom: 0; }
+  .comment .meta { font-size: 10.5px; color: var(--muted-foreground); display: flex; gap: 6px; align-items: center; }
+  .comment .meta .grow { flex: 1; }
+  .comment .body { white-space: pre-wrap; word-break: break-word; margin-top: 2px; }
+  .form { padding: 6px 8px; }
+  .form .actions { display: flex; gap: 6px; justify-content: flex-end; margin-top: 4px; }
+  .file-head { position: sticky; top: 34px; z-index: 5; padding: 4px 8px; background: var(--card); border-bottom: 1px solid var(--border); display: flex; gap: 6px; align-items: center; }
+  .file-head .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+  .run { margin: 8px; border: 1px solid var(--border); border-radius: var(--radius, 6px); background: var(--card); }
+  .run pre { margin: 0; max-height: 160px; overflow: auto; padding: 6px 8px; font-size: 11px; white-space: pre-wrap; word-break: break-word; background: var(--background); }
+  details summary { cursor: pointer; color: var(--muted-foreground); }
+  .add-count { color: #2ea043; } .del-count { color: #f85149; }
+  .files-collapsed .file-list-body { display: none; }
+  .empty { padding: 14px 10px; color: var(--muted-foreground); text-align: center; }
+  .kbd { font-family: ui-monospace, monospace; font-size: 10px; border: 1px solid var(--border); border-radius: 3px; padding: 0 3px; }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <span class="title" id="title">Self Review</span>
+  <button type="button" class="btn ghost small" id="btnRefreshOverview" title="PR 목록·세션 새로고침">↻</button>
+  <button type="button" class="btn ghost small" id="btnWide" title="내장 브라우저에서 넓게 보기">넓게</button>
+</div>
+<div class="tabs" id="tabs"></div>
+<div id="notice" class="notice" hidden></div>
+<div id="app"><div class="empty">로딩 중…</div></div>
+
+<script type="application/json" id="orca-panel-data">{"schemaVersion":1,"generatedAt":null,"reason":"baseline","server":null,"launcher":null,"agents":{},"worktrees":[],"sessions":{},"sessionList":[],"runs":{},"overview":{"repos":[],"github":{"enabled":false,"lastFetchedAt":null,"errors":[]}},"viewState":{}}</script>
+<script>
+'use strict'
+// Pure multi-line selection logic for the diff gutter (no DOM).
+
+const MAX_SELECTION_LINES = 200
+
+function beginSelection(cell) {
+  return { path: cell.path, side: cell.side, anchor: cell.line, head: cell.line }
+}
+
+function extendSelection(selection, cell) {
+  if (!selection) return beginSelection(cell)
+  if (cell.path !== selection.path || cell.side !== selection.side) return selection
+  return { ...selection, head: cell.line }
+}
+
+function normalizeRange({ anchor, head }) {
+  return { startLine: Math.min(anchor, head), endLine: Math.max(anchor, head) }
+}
+
+function clampRange({ anchor, head }) {
+  const { startLine, endLine } = normalizeRange({ anchor, head })
+  if (endLine - startLine + 1 <= MAX_SELECTION_LINES) return { startLine, endLine }
+  if (head >= anchor) return { startLine: anchor, endLine: anchor + MAX_SELECTION_LINES - 1 }
+  return { startLine: anchor - MAX_SELECTION_LINES + 1, endLine: anchor }
+}
+
+function isLineSelected(selection, cell) {
+  if (!selection || cell.path !== selection.path || cell.side !== selection.side) return false
+  const { startLine, endLine } = clampRange(selection)
+  return cell.line >= startLine && cell.line <= endLine
+}
+
+// Pure helpers for placing threads inline in the diff.
+
+function threadKey(path, side, line) {
+  return `${path}|${side}|${line}`
+}
+
+function placeThreads(threads) {
+  const placement = {}
+  for (const thread of threads) {
+    const key = threadKey(thread.path, thread.side, thread.endLine)
+    if (!placement[key]) placement[key] = []
+    placement[key].push(thread)
+  }
+  return placement
+}
+
+function countRunnable(threads) {
+  return threads.filter((thread) => thread.status === 'open' && thread.applicability === 'current').length
+}
+
+function countByFile(threads) {
+  const counts = {}
+  for (const thread of threads) counts[thread.path] = (counts[thread.path] ?? 0) + 1
+  return counts
+}
+
+
+// ------------------------------------------------------------------ data
+const TEMPLATE_VERSION = 'v7'
+let DATA = JSON.parse(document.getElementById('orca-panel-data').textContent || '{}')
+const PREVIEW = window.parent === window                       // opened in a normal browser (server /panel-preview)
+const PREVIEW_TOKEN = document.querySelector('meta[name="sr-token"]')?.content ?? null
+let CONTEXT = null                                             // { displayName, branch, terminals: [{id}] }
+let ROUTE = 'review'                                            // 'review' | 'overview'
+let ACTIVE_WORKTREE = null                                      // worktree entry from DATA.worktrees
+const UI = { file: null, selection: null, dragging: false, pendingForm: false, expanded: new Set(), draft: '', drafts: {}, scrollRestored: false, picker: null, lastMessage: '' }
+
+function escapeHtml(value) { return String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char])) }
+class Raw { constructor(html) { this.html = html } }
+const raw = (html) => new Raw(html)
+function h(strings, ...values) { return strings.reduce((out, part, index) => out + part + (index < values.length ? (values[index] instanceof Raw ? values[index].html : escapeHtml(values[index])) : ''), '') }
+function formatTime(iso) { if (!iso) return '—'; const d = new Date(iso); return Number.isNaN(d.getTime()) ? String(iso) : d.toLocaleTimeString() }
+function notice(message, isError) { const el = document.getElementById('notice'); el.textContent = message; el.className = 'notice' + (isError ? ' error' : ''); el.hidden = !message; UI.lastMessage = message }
+
+// ------------------------------------------------------------------ host bridge (panel actions)
+const pending = {}
+let counter = 0
+function hostCall(action, params) {
+  if (PREVIEW) {
+    if (action === 'workspace.readContext') { const w = DATA.worktrees[0]; return Promise.resolve(w ? { displayName: w.displayName, branch: w.branch, terminals: (w.bridgeTerminalIds || []).map((id) => ({ id })) } : null) }
+    if (action === 'notifications.show') { console.log('notify', params); return Promise.resolve({ delivered: true }) }
+    return Promise.reject(new Error('preview: ' + action + ' unavailable'))
+  }
+  return new Promise((resolve, reject) => {
+    const requestId = 'p' + (++counter)
+    pending[requestId] = { resolve, reject }
+    window.parent.postMessage({ type: 'orca-panel-action', requestId, action, params }, '*')
+    setTimeout(() => { if (pending[requestId]) { delete pending[requestId]; reject(new Error('호스트 응답 없음 (' + action + ')')) } }, 8000)
+  })
+}
+window.addEventListener('message', (event) => {
+  const data = event.data
+  if (!data || event.source !== window.parent) return
+  if (data.type === 'orca-panel-action-result') {
+    const entry = pending[data.requestId]
+    if (!entry) return
+    delete pending[data.requestId]
+    if (data.ok) entry.resolve(data.value); else entry.reject(new Error(data.error || data.errorCode || 'action failed'))
+    return
+  }
+  if (data.type === 'orca-panel-data' && data.data && data.data.schemaVersion === 1) {   // patched host: data without reload
+    DATA = data.data
+    pickWorktree()
+    render({ keepScroll: true })
+  }
+})
+
+// ------------------------------------------------------------------ sending ops to the server through the bridge terminal
+function encodeOp(op) {
+  const bytes = new TextEncoder().encode(JSON.stringify(op))
+  let binary = ''
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  return 'SR ' + btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+// The host only lets a panel type into terminals of the FOCUSED worktree, so the bridge we use is
+// whichever registered bridge lives among the focused worktree's terminals — regardless of which
+// worktree the panel is currently showing (ops carry their own worktree/session ids).
+function bridgeTerminalId() {
+  if (!CONTEXT) return null
+  const focused = new Set((CONTEXT.terminals || []).map((terminal) => terminal.id))
+  for (const worktree of DATA.worktrees || []) {
+    const hit = (worktree.bridgeTerminalIds || []).find((id) => focused.has(id))
+    if (hit) return hit
+  }
+  return null
+}
+async function send(op, { silent = false } = {}) {
+  if (PREVIEW && PREVIEW_TOKEN) {
+    const response = await fetch('/api/bridge', { method: 'POST', headers: { 'X-SR-Token': PREVIEW_TOKEN, 'Content-Type': 'application/json' }, body: JSON.stringify(op) })
+    const payload = await response.json().catch(() => null)
+    if (!response.ok) throw new Error(payload?.error?.message || ('HTTP ' + response.status))
+    if (op.op !== 'view' || op.loadFile) await previewReload()
+    return payload?.result
+  }
+  const terminalId = bridgeTerminalId()
+  if (!terminalId) { showBridgePicker(); throw new Error('브리지 터미널이 없습니다. 먼저 "브리지 시작"을 누르세요.') }
+  const line = encodeOp(op)
+  const MAX = 3800
+  if (line.length <= MAX) {
+    const result = await hostCall('terminal.sendText', { terminalId, text: line, enter: true })
+    if (!result || !result.accepted) throw new Error('터미널이 입력을 받지 않았습니다')
+  } else {
+    const chunkId = 'c' + Date.now().toString(36)
+    const total = Math.ceil(line.length / MAX)
+    for (let index = 0; index < total; index += 1) {
+      const result = await hostCall('terminal.sendText', { terminalId, text: 'SRC ' + chunkId + ' ' + index + ' ' + total + ' ' + line.slice(index * MAX, (index + 1) * MAX), enter: true })
+      if (!result || !result.accepted) throw new Error('터미널이 입력을 받지 않았습니다 (chunk ' + index + ')')
+    }
+  }
+  if (!silent) notice('전송됨 — 패널이 곧 갱신됩니다.')
+  return null
+}
+async function previewReload() {
+  const response = await fetch('/panel-preview', { headers: { 'X-SR-Token': PREVIEW_TOKEN } })
+  const html = await response.text()
+  const payload = /<script type="application\/json" id="orca-panel-data">([\s\S]*?)<\/script>/.exec(html)
+  if (payload) { DATA = JSON.parse(payload[1]); pickWorktree(); render({ keepScroll: true }) }
+}
+
+// ------------------------------------------------------------------ context + worktree selection
+async function loadContext() {
+  try { CONTEXT = await hostCall('workspace.readContext', {}) } catch (error) { CONTEXT = null; notice(error.message, true) }
+  pickWorktree()
+}
+function contextKey() { return CONTEXT ? CONTEXT.displayName + '|' + CONTEXT.branch : 'none' }
+function pickWorktree() {
+  const worktrees = DATA.worktrees || []
+  let match = null
+  // a worktree picked by hand in the overview sticks until the focused worktree actually changes
+  if (UI.manualWorktree && UI.manualContextKey === contextKey()) {
+    ACTIVE_WORKTREE = worktrees.find((w) => w.path === UI.manualWorktree) || ACTIVE_WORKTREE
+    if (ACTIVE_WORKTREE) return
+  }
+  if (CONTEXT) {
+    const contextTerminals = new Set((CONTEXT.terminals || []).map((t) => t.id))
+    const shortBranch = String(CONTEXT.branch || '').replace(/^refs\/heads\//, '')
+    // Score every worktree: shared live terminals count most; branch/displayName break ties.
+    const scored = worktrees.map((w) => {
+      const shared = (w.terminalIds || []).filter((id) => contextTerminals.has(id)).length
+      const score = shared * 100 + (w.branch === shortBranch ? 10 : 0) + (w.displayName === CONTEXT.displayName ? 1 : 0)
+      return { w, score }
+    }).filter((entry) => entry.score > 0).sort((a, b) => b.score - a.score)
+    match = scored.length ? scored[0].w : null
+  }
+  if (!match && UI.manualWorktree) match = worktrees.find((w) => w.path === UI.manualWorktree) || null
+  ACTIVE_WORKTREE = match
+}
+function activeSession() {
+  if (!ACTIVE_WORKTREE || !ACTIVE_WORKTREE.sessionId) return null
+  return DATA.sessions?.[ACTIVE_WORKTREE.sessionId] || null
+}
+
+// ------------------------------------------------------------------ rendering
+const app = document.getElementById('app')
+function render({ keepScroll = false } = {}) {
+  const scrollY = window.scrollY
+  saveDraft()
+  renderTabs()
+  const session = activeSession()
+  const viewState = session ? DATA.viewState?.[session.session.id] : null
+  if (!UI.file && viewState?.file) UI.file = viewState.file
+  if (ROUTE === 'overview') renderOverview()
+  else renderReview(session)
+  document.getElementById('title').textContent = ACTIVE_WORKTREE ? `${ACTIVE_WORKTREE.repoDisplayName} · ${ACTIVE_WORKTREE.branch}` : 'Self Review'
+  restoreDraft()
+  if (keepScroll) window.scrollTo(0, scrollY)
+  else if (!UI.scrollRestored && viewState && ROUTE === 'review') { UI.scrollRestored = true; setTimeout(() => window.scrollTo(0, viewState.scroll || 0), 0) }
+}
+function renderTabs() {
+  document.getElementById('tabs').innerHTML = h`<button type="button" class="tab ${ROUTE === 'review' ? 'active' : ''}" data-route="review">리뷰</button><button type="button" class="tab ${ROUTE === 'overview' ? 'active' : ''}" data-route="overview">전체 PR·세션</button>`
+  for (const tab of document.querySelectorAll('.tab')) tab.addEventListener('pointerdown', (event) => { event.preventDefault(); ROUTE = tab.dataset.route; render({ keepScroll: false }); window.scrollTo(0, 0) })
+}
+
+function renderOverview() {
+  const overview = DATA.overview || { repos: [], github: { enabled: false, errors: [] } }
+  const sessions = DATA.sessionList || []
+  const prs = overview.repos.flatMap((repo) => repo.prs.map((pr) => ({ repo, pr }))).sort((a, b) => String(b.pr.updatedAt).localeCompare(String(a.pr.updatedAt)))
+  const repoFilter = UI.repoFilter || ''
+  const draftOnly = Boolean(UI.draftOnly)
+  const rows = prs.filter(({ repo, pr }) => (!repoFilter || repo.id === repoFilter) && (!draftOnly || pr.isDraft))
+  app.innerHTML = h`
+    <div class="card"><div class="card-head">worktree</div><div class="card-body">
+      ${raw((DATA.worktrees || []).length === 0 ? '<div class="muted">Orca에 등록된 worktree가 없습니다.</div>' : (DATA.worktrees || []).map((w) => h`<div class="list-item"><span class="grow"><strong>${w.repoDisplayName}</strong> <span class="mono">${w.branch}</span>${w.sessionId ? raw(' <span class="badge">세션</span>') : ''}${(w.bridgeTerminalIds || []).length ? raw(' <span class="badge">브리지</span>') : ''}</span><button type="button" class="btn small" data-open-worktree="${w.path}">${w.sessionId ? '열기' : '리뷰 시작'}</button></div>`).join(''))}
+    </div></div>
+    <div class="card"><div class="card-head">로컬 세션 <span class="muted small">${sessions.length}</span></div><div class="card-body">
+      ${raw(sessions.length === 0 ? '<div class="muted">아직 세션이 없습니다.</div>' : sessions.map((s) => h`<div class="list-item"><span class="grow"><strong>${s.repoDisplayName}</strong> <span class="mono">${s.branch}</span> <span class="badge">${s.status}</span> <span class="muted small">open ${s.threads.open} · resolved ${s.threads.resolved}</span></span>${s.status !== 'completed' ? raw(h`<button type="button" class="btn small" data-open-session="${s.id}">열기</button>`) : ''}<button type="button" class="btn small danger" data-delete-session="${s.id}">삭제</button></div>`).join(''))}
+    </div></div>
+    <div class="card"><div class="card-head">Open PR <span class="muted small">${overview.github.enabled ? (overview.github.lastFetchedAt ? '조회 ' + formatTime(overview.github.lastFetchedAt) : '') : 'gh 없음'}</span></div><div class="card-body">
+      ${raw(overview.github.errors?.length ? '<div class="notice" style="margin:0 0 6px">' + overview.github.errors.map((e) => h`<div><strong>${e.repo}</strong>: ${e.message}</div>`).join('') + '</div>' : '')}
+      <div class="row" style="margin-bottom:6px"><select id="repoFilter"><option value="">전체 레포</option>${raw(overview.repos.map((repo) => h`<option value="${repo.id}" ${raw(repoFilter === repo.id ? 'selected' : '')}>${repo.displayName}</option>`).join(''))}</select><label class="small"><input type="checkbox" id="draftOnly" ${raw(draftOnly ? 'checked' : '')}> Draft만</label><span class="muted small">${rows.length}건</span></div>
+      ${raw(rows.length === 0 ? '<div class="muted">표시할 PR이 없습니다.</div>' : rows.map(({ repo, pr }) => h`<div class="list-item" style="flex-direction:column;align-items:stretch;gap:2px"><span class="pr-title">${pr.isDraft ? raw('<span class="badge">Draft</span> ') : ''}<strong>#${pr.number}</strong> ${pr.title}</span><span class="muted small mono">${repo.displayName} · ${pr.author} · ${pr.headRefName} → ${pr.baseRefName} · <span class="add-count">+${pr.additions}</span> <span class="del-count">−${pr.deletions}</span></span></div>`).join(''))}
+      <div class="muted small" style="margin-top:6px">PR 상세·diff 는 "넓게" 버튼으로 내장 브라우저에서 봅니다.</div>
+    </div></div>`
+  app.querySelector('#repoFilter').addEventListener('change', (e) => { UI.repoFilter = e.target.value; renderOverview() })
+  app.querySelector('#draftOnly').addEventListener('change', (e) => { UI.draftOnly = e.target.checked; renderOverview() })
+  for (const button of app.querySelectorAll('[data-open-worktree]')) button.addEventListener('click', () => { UI.manualWorktree = button.dataset.openWorktree; UI.manualContextKey = contextKey(); ACTIVE_WORKTREE = (DATA.worktrees || []).find((w) => w.path === UI.manualWorktree) || null; ROUTE = 'review'; UI.file = null; if (ACTIVE_WORKTREE && !ACTIVE_WORKTREE.sessionId) act(() => send({ op: 'session.open', worktreePath: UI.manualWorktree })); render() })
+  for (const button of app.querySelectorAll('[data-open-session]')) button.addEventListener('click', () => { const s = (DATA.sessionList || []).find((x) => x.id === button.dataset.openSession); UI.manualWorktree = s?.repoPath || null; UI.manualContextKey = contextKey(); ACTIVE_WORKTREE = (DATA.worktrees || []).find((w) => w.path === UI.manualWorktree) || { path: s.repoPath, branch: s.branch, displayName: s.branch, repoDisplayName: s.repoDisplayName, sessionId: s.id, bridgeTerminalIds: [] }; ROUTE = 'review'; UI.file = null; render() })
+  for (const button of app.querySelectorAll('[data-delete-session]')) button.addEventListener('click', () => { if (confirm('세션과 코멘트를 삭제할까요? (로컬에서만)')) act(() => send({ op: 'session.delete', sessionId: button.dataset.deleteSession })) })
+}
+
+function renderReview(session) {
+  if (!ACTIVE_WORKTREE) {
+    app.innerHTML = h`<div class="empty">${CONTEXT ? `현재 worktree(${CONTEXT.displayName})를 등록 목록에서 찾지 못했습니다.` : '포커스된 worktree가 없습니다.'}<br><span class="small">"전체 PR·세션" 탭에서 worktree를 고르거나, 커맨드 팔레트 "Self Review: 현재 worktree 리뷰"를 실행하세요.</span></div>`
+    return
+  }
+  if (!session) {
+    app.innerHTML = h`<div class="card"><div class="card-body"><div class="row" style="margin-bottom:6px">${raw(worktreeSwitcherHtml())}</div><div style="margin-bottom:6px"><strong>${ACTIVE_WORKTREE.repoDisplayName}</strong> <span class="mono">${ACTIVE_WORKTREE.branch}</span></div><div class="muted small" style="margin-bottom:8px">이 worktree 의 리뷰 세션이 아직 없습니다.</div><button type="button" class="btn primary" id="startSession">리뷰 세션 시작</button></div></div>${raw(bridgeStatusHtml())}`
+    app.querySelector('#startSession').addEventListener('click', () => act(() => send({ op: 'session.open', worktreePath: ACTIVE_WORKTREE.path })))
+    bindWorktreeSwitcher()
+    bindBridgePicker()
+    return
+  }
+  const { session: s, diff } = session
+  const files = diff.files || []
+  const switcher = worktreeSwitcherHtml()
+  if (!UI.file || !files.some((f) => f.path === UI.file)) UI.file = files[0]?.path || null
+  const runnable = countRunnable(s.threads)
+  const run = DATA.runs?.[s.id] || null
+  const live = run && (run.status === 'running' || run.status === 'queued')
+  const agents = DATA.agents || {}
+  const canRun = runnable > 0 && agents[s.agent]?.available && !live
+  const counts = countByFile(s.threads)
+  app.innerHTML = h`
+    <div class="card" style="margin-top:8px"><div class="card-body">
+      <div class="row">${raw(switcher)}<span class="badge">${s.status}</span><span class="muted small">base ${s.baseRef}</span><span class="muted small">파일 ${files.length}</span>${diff.error ? raw(h`<span class="badge warn">${diff.error}</span>`) : ''}</div>
+      <div class="row" style="margin-top:6px">
+        <select id="agent">${raw(['claude', 'codex'].map((name) => h`<option value="${name}" ${raw(s.agent === name ? 'selected' : '')} ${raw(agents[name]?.available ? '' : 'disabled')}>${name}${agents[name]?.available ? '' : ' (없음)'}</option>`).join(''))}</select>
+        <button type="button" class="btn primary" id="runFix" ${raw(canRun ? '' : 'disabled')} title="${!agents[s.agent]?.available ? s.agent + ' CLI 없음' : runnable === 0 ? '열려 있고 최신인 스레드 없음' : live ? '실행 중' : ''}">리뷰 완료 및 AI 수정 (${runnable})</button>
+        <button type="button" class="btn small" id="completeSession">완료</button>
+      </div>
+      <div class="muted small" style="margin-top:4px">번호 거터를 드래그/Shift+클릭해 여러 줄을 고르세요 (최대 200줄).</div>
+    </div></div>
+    ${raw(bridgeStatusHtml())}
+    ${raw(run ? h`<div class="run"><div class="card-head">AI 수정 <span class="badge">${run.status}</span><span class="muted small">${run.agent} · 스레드 ${run.threadIds.length}${run.exitCode !== null && run.exitCode !== undefined ? ' · exit ' + run.exitCode : ''}</span><span style="flex:1"></span>${live ? raw(h`<button type="button" class="btn small danger" id="cancelRun" data-run="${run.id}">취소</button>`) : ''}</div>${run.changedFiles?.length ? raw(h`<div class="card-body small"><strong>변경 파일</strong> ${run.changedFiles.join(', ')}</div>`) : ''}<details><summary class="small" style="padding:4px 8px">로그</summary><pre>${run.logTail || '(없음)'}</pre></details></div>` : '')}
+    <div class="card ${UI.filesCollapsed ? 'files-collapsed' : ''}"><div class="card-head" id="fileListHead" style="cursor:pointer">파일 ${files.length} <span class="muted small">${UI.filesCollapsed ? '펼치기' : '접기'}</span></div><div class="card-body file-list-body" style="padding:4px">
+      ${raw(files.length === 0 ? '<div class="muted">변경 사항이 없습니다.</div>' : files.map((f) => h`<div class="file-item ${f.path === UI.file ? 'active' : ''}" data-file="${f.path}" title="${f.path}"><span class="badge">${{ added: 'A', modified: 'M', deleted: 'D', renamed: 'R', untracked: 'U' }[f.changeType] || '?'}</span><span class="name mono">${f.path}</span><span class="small"><span class="add-count">+${f.additions}</span> <span class="del-count">−${f.deletions}</span>${counts[f.path] ? ' 💬' + counts[f.path] : ''}</span></div>`).join(''))}
+    </div></div>
+    <div id="filePanel"></div>`
+  app.querySelector('#agent').addEventListener('change', (e) => act(() => send({ op: 'session.patch', sessionId: s.id, revision: s.revision, agent: e.target.value })))
+  app.querySelector('#runFix').addEventListener('click', () => act(() => send({ op: 'run.start', sessionId: s.id, revision: s.revision, agent: s.agent })))
+  app.querySelector('#completeSession').addEventListener('click', () => { const open = s.threads.filter((t) => t.status === 'open').length; if (open === 0 || confirm(`열린 스레드가 ${open}개 남아 있습니다. 완료할까요?`)) act(() => send({ op: 'session.complete', sessionId: s.id })) })
+  app.querySelector('#cancelRun')?.addEventListener('click', (e) => act(() => send({ op: 'run.cancel', runId: e.currentTarget.dataset.run })))
+  app.querySelector('#fileListHead').addEventListener('click', () => { UI.filesCollapsed = !UI.filesCollapsed; render({ keepScroll: true }) })
+  for (const item of app.querySelectorAll('[data-file]')) item.addEventListener('click', () => {
+    UI.file = item.dataset.file; UI.selection = null; UI.pendingForm = false; UI.filesCollapsed = true; render({ keepScroll: false })
+    const picked = files.find((f) => f.path === UI.file)
+    if (picked && picked.panelTruncated) act(() => send({ op: 'view', sessionId: s.id, route: ROUTE, file: UI.file, scroll: 0, loadFile: true }))
+    else sendView(s.id)
+  })
+  bindWorktreeSwitcher()
+  bindBridgePicker()
+  renderFile(session)
+}
+
+function worktreeSwitcherHtml() {
+  const worktrees = DATA.worktrees || []
+  return h`<select id="worktreeSwitch" title="worktree 선택">${raw(worktrees.map((w) => h`<option value="${w.path}" ${raw(ACTIVE_WORKTREE && w.path === ACTIVE_WORKTREE.path ? 'selected' : '')}>${w.repoDisplayName} · ${w.branch}${w.sessionId ? ' ●' : ''}</option>`).join(''))}</select>`
+}
+function bindWorktreeSwitcher() {
+  app.querySelector('#worktreeSwitch')?.addEventListener('change', (event) => {
+    UI.manualWorktree = event.target.value
+    UI.manualContextKey = contextKey()
+    ACTIVE_WORKTREE = (DATA.worktrees || []).find((w) => w.path === UI.manualWorktree) || ACTIVE_WORKTREE
+    UI.file = null; UI.selection = null; UI.pendingForm = false
+    render()
+  })
+}
+
+function bridgeStatusHtml() {
+  if (PREVIEW) return ''
+  const terminalId = bridgeTerminalId()
+  if (terminalId) return ''
+  const terminals = CONTEXT?.terminals || []
+  return h`<div class="card"><div class="card-body"><div class="small" style="margin-bottom:4px"><strong>브리지 터미널 없음</strong> — 서버가 1분 안에 "Self Review bridge" 터미널을 자동으로 다시 만듭니다. 그 탭은 닫지 마세요. 바로 필요하면 커맨드 팔레트 <code>Self Review: 현재 worktree 리뷰</code> 를 실행하세요.</div><details><summary class="small">수동으로 시작</summary><div class="row"><select id="bridgePicker" ${raw(terminals.length ? '' : 'disabled')}>${raw(terminals.length ? terminals.map((t, i) => h`<option value="${t.id}" ${raw(UI.picker === t.id ? 'selected' : '')}>터미널 ${i + 1} (…${String(t.id).slice(-6)})</option>`).join('') : '<option value="">열린 터미널 없음</option>')}</select><button type="button" class="btn primary small" id="startBridge" ${raw(terminals.length ? '' : 'disabled')}>브리지 시작</button></div><div class="muted small" style="margin-top:4px">에이전트(claude/codex) TUI 가 아닌 <b>셸 터미널</b>을 고르세요. 그 터미널이 브리지로 전환됩니다.</div></details></div></div>`
+}
+function showBridgePicker() { render({ keepScroll: true }) }
+function bindBridgePicker() {
+  const picker = app.querySelector('#bridgePicker')
+  const button = app.querySelector('#startBridge')
+  if (!picker || !button) return
+  picker.addEventListener('change', () => { UI.picker = picker.value })
+  button.addEventListener('click', async () => {
+    const terminalId = picker.value
+    if (!terminalId) return
+    UI.picker = terminalId
+    const short = (id) => String(id).replace(/^term_/, 't_').slice(0, 10)
+    const diag = btoa(unescape(encodeURIComponent(JSON.stringify({ v: TEMPLATE_VERSION, manual: UI.manualWorktree, gen: DATA.generatedAt, ctx: CONTEXT && { d: CONTEXT.displayName, b: CONTEXT.branch, t: (CONTEXT.terminals || []).map((t) => short(t.id)) }, active: ACTIVE_WORKTREE && { p: ACTIVE_WORKTREE.path.split('/').pop(), s: ACTIVE_WORKTREE.sessionId, bridge: (ACTIVE_WORKTREE.bridgeTerminalIds || []).map(short), term: (ACTIVE_WORKTREE.terminalIds || []).filter((x) => String(x).startsWith('term_')).map(short) }, wts: (DATA.worktrees || []).map((w) => [w.path.split('/').pop(), (w.terminalIds || []).filter((x) => String(x).startsWith('term_')).map(short)]) }))))
+    const text = '"' + (DATA.launcher || '$HOME/Library/Application Support/OrcaLocalSelfReview/bin/open-review') + '" --bridge --panel-terminal ' + terminalId + ' --diag ' + diag
+    try {
+      const result = await hostCall('terminal.sendText', { terminalId, text, enter: true })
+      notice(result?.accepted ? '브리지를 시작했습니다. 몇 초 뒤 패널이 갱신됩니다.' : '터미널이 입력을 받지 않았습니다.', !result?.accepted)
+    } catch (error) { notice(error.message, true) }
+  })
+}
+
+function renderFile(session) {
+  const host = document.getElementById('filePanel')
+  if (!host) return
+  const { session: s, diff } = session
+  const file = (diff.files || []).find((f) => f.path === UI.file)
+  if (!file) { host.innerHTML = '<div class="empty">파일을 선택하세요.</div>'; return }
+  const canComment = Boolean(PREVIEW || bridgeTerminalId())
+  const threads = s.threads.filter((t) => t.path === file.path)
+  const placement = placeThreads(threads)
+  const parts = []
+  parts.push(h`<div class="file-head"><span class="name mono" title="${file.path}">${file.path}</span><span class="badge">${file.changeType}</span><span class="small"><span class="add-count">+${file.additions}</span> <span class="del-count">−${file.deletions}</span></span></div>`)
+  if (file.binary || file.truncated || !file.hunks.length) {
+    parts.push(h`<div class="empty">${file.binary ? '바이너리 파일' : file.panelTruncated ? '이 파일의 diff 는 아직 패널에 실리지 않았습니다.' : file.truncated ? 'diff가 20,000줄을 초과합니다.' : '표시할 hunk 없음'}${file.panelTruncated ? raw('<div style="margin-top:6px"><button type="button" class="btn primary small" id="loadFile">이 파일 불러오기</button></div>') : ''}</div>`)
+    host.innerHTML = parts.join('')
+    host.querySelector('#loadFile')?.addEventListener('click', () => act(() => send({ op: 'view', sessionId: s.id, route: ROUTE, file: file.path, scroll: 0, loadFile: true })))
+    return
+  }
+  const rows = []
+  rows.push('<table class="diff"><colgroup><col class="g"><col class="m"><col></colgroup><tbody>')
+  for (const hunk of file.hunks) {
+    rows.push(h`<tr class="hunk"><td colspan="3">${hunk.header}</td></tr>`)
+    for (const line of hunk.lines) {
+      const side = line.type === 'del' ? 'old' : 'new'
+      const number = side === 'old' ? line.oldNo : line.newNo
+      const selected = number !== null && isLineSelected(UI.selection, { path: file.path, side, line: number })
+      const enabled = canComment && number !== null
+      rows.push(h`<tr class="${line.type}${selected ? ' selected' : ''}"><td class="gutter ${enabled ? '' : 'disabled'}" ${raw(enabled ? `tabindex="0" data-path="${escapeHtml(file.path)}" data-side="${side}" data-line="${number}"` : '')}>${number ?? ''}</td><td class="marker">${line.type === 'add' ? '+' : line.type === 'del' ? '−' : ''}</td><td class="code">${line.text}</td></tr>`)
+      if (number !== null) {
+        const here = placement[threadKey(file.path, side, number)]
+        if (here) rows.push(`<tr class="thread-row"><td colspan="3">${here.map(threadHtml).join('')}</td></tr>`)
+        if (UI.pendingForm && UI.selection && UI.selection.path === file.path && UI.selection.side === side && clampRange(UI.selection).endLine === number) rows.push(`<tr class="thread-row"><td colspan="3">${formHtml()}</td></tr>`)
+      }
+    }
+  }
+  rows.push('</tbody></table>')
+  const orphaned = threads.filter((t) => !file.hunks.some((hk) => hk.lines.some((l) => (t.side === 'old' ? l.oldNo : l.newNo) === t.endLine)))
+  if (orphaned.length) rows.push('<div class="card-body"><div class="small muted">현재 diff 에서 위치를 찾지 못한 스레드</div>' + orphaned.map(threadHtml).join('') + '</div>')
+  host.innerHTML = parts.join('') + rows.join('')
+  bindThreadHandlers(host, s)
+}
+
+function threadHtml(thread) {
+  const expanded = UI.expanded.has(thread.id)
+  const range = thread.startLine === thread.endLine ? 'L' + thread.startLine : 'L' + thread.startLine + '–L' + thread.endLine
+  return h`<div class="thread ${thread.status === 'resolved' ? 'resolved' : ''} ${expanded ? 'expanded' : ''}" data-thread="${thread.id}">
+    <div class="thread-head"><span class="badge">${thread.status === 'open' ? '열림' : '해결'}</span>${thread.applicability === 'outdated' ? raw('<span class="badge warn" title="현재 diff에서 원문을 찾지 못함">outdated</span>') : ''}<span class="mono">${thread.side} ${range}</span><span class="grow"></span>${thread.status === 'resolved' ? raw(h`<button type="button" class="btn ghost small" data-toggle="${thread.id}">${expanded ? '접기' : '펼치기'}</button>`) : ''}<button type="button" class="btn small" data-thread-status="${thread.status === 'open' ? 'resolved' : 'open'}" data-thread="${thread.id}">${thread.status === 'open' ? '해결' : '다시 열기'}</button><button type="button" class="btn small danger" data-thread-delete="${thread.id}">삭제</button></div>
+    <div class="thread-body">${raw(thread.comments.map((c) => h`<div class="comment" data-comment="${c.id}"><div class="meta"><span>나</span><span>${formatTime(c.createdAt)}</span><span class="grow"></span><button type="button" class="btn ghost small" data-comment-edit="${c.id}" data-thread="${thread.id}">수정</button><button type="button" class="btn ghost small" data-comment-delete="${c.id}" data-thread="${thread.id}">삭제</button></div><div class="body">${c.body}</div></div>`).join(''))}
+      <div class="form"><textarea rows="2" placeholder="답글…" data-reply-text="${thread.id}"></textarea><div class="actions"><button type="button" class="btn primary small" data-reply="${thread.id}">답글</button></div></div></div></div>`
+}
+function formHtml() {
+  const { startLine, endLine } = clampRange(UI.selection)
+  const range = startLine === endLine ? 'L' + startLine : 'L' + startLine + '–L' + endLine + ' (' + (endLine - startLine + 1) + '줄)'
+  return h`<div class="thread"><div class="thread-head"><span class="mono">${UI.selection.side} ${range}</span><span class="grow"></span><span class="muted small">⌘/Ctrl+Enter 등록</span></div><div class="form"><textarea id="newComment" rows="3" placeholder="코멘트를 입력하세요">${UI.draft}</textarea><div class="actions"><button type="button" class="btn small" id="cancelComment">취소</button><button type="button" class="btn primary small" id="submitComment">코멘트 등록</button></div></div></div>`
+}
+function selectedText(session, selection) {
+  const file = session.diff.files.find((f) => f.path === selection.path)
+  const { startLine, endLine } = clampRange(selection)
+  const lines = []
+  for (const hunk of file?.hunks || []) for (const line of hunk.lines) {
+    const number = selection.side === 'old' ? line.oldNo : line.newNo
+    if (number !== null && number >= startLine && number <= endLine && (selection.side === 'old' ? line.type === 'del' : line.type !== 'del')) lines.push(line.text)
+  }
+  return lines.join('\n')
+}
+function bindThreadHandlers(host, s) {
+  const session = activeSession()
+  host.querySelector('#submitComment')?.addEventListener('click', submitNewComment)
+  host.querySelector('#cancelComment')?.addEventListener('click', () => { UI.selection = null; UI.pendingForm = false; UI.draft = ''; render({ keepScroll: true }) })
+  host.querySelector('#newComment')?.addEventListener('keydown', (e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') submitNewComment(); if (e.key === 'Escape') { UI.selection = null; UI.pendingForm = false; UI.draft = ''; render({ keepScroll: true }) } })
+  function submitNewComment() {
+    const textarea = host.querySelector('#newComment')
+    if (!textarea || !textarea.value.trim()) return
+    const { startLine, endLine } = clampRange(UI.selection)
+    const file = session.diff.files.find((f) => f.path === UI.selection.path)
+    const op = { op: 'thread.add', sessionId: s.id, revision: s.revision, path: UI.selection.path, oldPath: file?.oldPath ?? null, side: UI.selection.side, startLine, endLine, selectedText: selectedText(session, UI.selection), body: textarea.value }
+    UI.draft = textarea.value
+    act(() => send(op), () => { UI.selection = null; UI.pendingForm = false; UI.draft = '' })
+  }
+  for (const b of host.querySelectorAll('[data-toggle]')) b.addEventListener('click', () => { const id = b.dataset.toggle; if (UI.expanded.has(id)) UI.expanded.delete(id); else UI.expanded.add(id); render({ keepScroll: true }) })
+  for (const b of host.querySelectorAll('[data-thread-status]')) b.addEventListener('click', () => act(() => send({ op: 'thread.patch', sessionId: s.id, revision: s.revision, threadId: b.dataset.thread, status: b.dataset.threadStatus })))
+  for (const b of host.querySelectorAll('[data-thread-delete]')) b.addEventListener('click', () => { if (confirm('스레드를 삭제할까요?')) act(() => send({ op: 'thread.delete', sessionId: s.id, revision: s.revision, threadId: b.dataset.threadDelete })) })
+  for (const b of host.querySelectorAll('[data-reply]')) b.addEventListener('click', () => { const ta = host.querySelector(`[data-reply-text="${b.dataset.reply}"]`); if (!ta.value.trim()) return; UI.drafts[b.dataset.reply] = ta.value; act(() => send({ op: 'comment.add', sessionId: s.id, revision: s.revision, threadId: b.dataset.reply, body: ta.value }), () => { delete UI.drafts[b.dataset.reply] }) })
+  for (const b of host.querySelectorAll('[data-comment-delete]')) b.addEventListener('click', () => { if (confirm('코멘트를 삭제할까요?')) act(() => send({ op: 'comment.delete', sessionId: s.id, revision: s.revision, threadId: b.dataset.thread, commentId: b.dataset.commentDelete })) })
+  for (const b of host.querySelectorAll('[data-comment-edit]')) b.addEventListener('click', () => {
+    const commentEl = host.querySelector(`[data-comment="${b.dataset.commentEdit}"] .body`)
+    const thread = s.threads.find((t) => t.id === b.dataset.thread)
+    const comment = thread.comments.find((c) => c.id === b.dataset.commentEdit)
+    commentEl.innerHTML = h`<textarea rows="3">${comment.body}</textarea><div class="actions" style="display:flex;gap:6px;justify-content:flex-end;margin-top:4px"><button type="button" class="btn small" data-cancel-edit>취소</button><button type="button" class="btn primary small" data-save-edit>저장</button></div>`
+    commentEl.querySelector('[data-cancel-edit]').addEventListener('click', () => render({ keepScroll: true }))
+    commentEl.querySelector('[data-save-edit]').addEventListener('click', () => act(() => send({ op: 'comment.patch', sessionId: s.id, revision: s.revision, threadId: thread.id, commentId: comment.id, body: commentEl.querySelector('textarea').value })))
+  })
+}
+
+// ------------------------------------------------------------------ gutter selection (drag / shift-click / keyboard)
+function cellFromEvent(event) {
+  const cell = event.target.closest?.('.gutter[data-line]')
+  if (!cell) return null
+  return { path: cell.dataset.path, side: cell.dataset.side, line: Number(cell.dataset.line) }
+}
+app.addEventListener('mousedown', (event) => {
+  const cell = cellFromEvent(event)
+  if (!cell || event.button !== 0) return
+  event.preventDefault()
+  UI.pendingForm = false
+  UI.selection = event.shiftKey && UI.selection ? extendSelection(UI.selection, cell) : beginSelection(cell)
+  UI.dragging = true
+  renderFile(activeSession())
+})
+app.addEventListener('mouseover', (event) => {
+  if (!UI.dragging) return
+  const cell = cellFromEvent(event)
+  if (!cell) return
+  const next = extendSelection(UI.selection, cell)
+  if (next !== UI.selection) { UI.selection = next; renderFile(activeSession()) }
+})
+window.addEventListener('mouseup', () => { if (!UI.dragging) return; UI.dragging = false; if (UI.selection) { UI.pendingForm = true; renderFile(activeSession()); setTimeout(() => document.getElementById('newComment')?.focus(), 0) } })
+app.addEventListener('keydown', (event) => {
+  const cell = cellFromEvent(event)
+  if (!cell) return
+  if (event.key === 'Enter') { event.preventDefault(); UI.selection = beginSelection(cell); UI.pendingForm = true; renderFile(activeSession()); setTimeout(() => document.getElementById('newComment')?.focus(), 0) }
+  if (event.shiftKey && (event.key === 'ArrowDown' || event.key === 'ArrowUp') && UI.selection) {
+    event.preventDefault()
+    UI.selection = extendSelection(UI.selection, { ...cell, line: UI.selection.head + (event.key === 'ArrowDown' ? 1 : -1) })
+    UI.pendingForm = true
+    renderFile(activeSession())
+    app.querySelector(`.gutter[data-side="${UI.selection.side}"][data-line="${UI.selection.head}"]`)?.focus()
+  }
+})
+
+// ------------------------------------------------------------------ actions, drafts, view state
+async function act(operation, onSuccess) {
+  try { await operation(); if (onSuccess) onSuccess(); if (PREVIEW) render({ keepScroll: true }) }
+  catch (error) { notice(error.message, true) }
+}
+function saveDraft() {
+  const ta = document.getElementById('newComment')
+  if (ta) UI.draft = ta.value
+  for (const el of document.querySelectorAll('[data-reply-text]')) if (el.value) UI.drafts[el.dataset.replyText] = el.value
+}
+function restoreDraft() {
+  for (const el of document.querySelectorAll('[data-reply-text]')) if (UI.drafts[el.dataset.replyText]) el.value = UI.drafts[el.dataset.replyText]
+}
+let viewTimer = null
+function sendView(sessionId) {
+  if (!sessionId) return
+  clearTimeout(viewTimer)
+  viewTimer = setTimeout(() => { send({ op: 'view', sessionId, route: ROUTE, file: UI.file, scroll: window.scrollY }, { silent: true }).catch(() => {}) }, 1200)
+}
+window.addEventListener('scroll', () => { const s = activeSession(); if (s && ROUTE === 'review') sendView(s.session.id) }, { passive: true })
+
+document.getElementById('btnRefreshOverview').addEventListener('click', () => act(() => send({ op: 'overview.refresh' })))
+document.getElementById('btnWide').addEventListener('click', () => { const s = activeSession(); if (s) act(() => send({ op: 'wide', sessionId: s.session.id })); else notice('세션을 먼저 시작하세요.', true) })
+
+// ------------------------------------------------------------------ boot
+loadContext().then(() => {
+  const s = activeSession()
+  const viewState = s ? DATA.viewState?.[s.session.id] : null
+  if (viewState?.route) ROUTE = viewState.route
+  if (!ACTIVE_WORKTREE && (DATA.worktrees || []).length === 0) ROUTE = 'overview'
+  render()
+})
+// Re-read the host context on focus, but only re-render when the focused worktree really changed:
+// a full re-render in the middle of a click swallows that click (the target node is replaced).
+window.addEventListener('focus', () => {
+  const before = contextKey()
+  loadContext().then(() => { if (contextKey() !== before) render({ keepScroll: true }) })
+})
+</script>
+</body>
+</html>

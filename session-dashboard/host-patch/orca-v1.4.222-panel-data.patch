@@ -1,0 +1,108 @@
+diff --git a/src/renderer/src/components/right-sidebar/PluginPanel.test.tsx b/src/renderer/src/components/right-sidebar/PluginPanel.test.tsx
+index 1b4d0d76..8c39400d 100644
+--- a/src/renderer/src/components/right-sidebar/PluginPanel.test.tsx
++++ b/src/renderer/src/components/right-sidebar/PluginPanel.test.tsx
+@@ -109,6 +109,27 @@ async function renderPanel(tabKey: string): Promise<void> {
+ }
+ 
+ describe('PluginPanel', () => {
++  it('delivers fresh data without replacing the frame or its selected view', async () => {
++    const document = (count: number): string => '<h1>Dashboard</h1><script type="application/json" id="orca-panel-data">' + JSON.stringify({ count }) + '</script>'
++    readPanelEntryMock.mockResolvedValue({ html: document(1), sessionToken: SESSION_TOKEN })
++    await renderPanel(dashboardPanel.tabKey)
++    const iframe = container.querySelector('iframe')
++    expect(iframe?.contentWindow).toBeTruthy()
++    const postMessage = vi.spyOn(iframe!.contentWindow!, 'postMessage')
++    iframe?.setAttribute('data-selected-session', 'session-one')
++    const initialSrcdoc = iframe?.getAttribute('srcdoc')
++    readPanelEntryMock.mockResolvedValue({ html: document(2), sessionToken: REFRESHED_SESSION_TOKEN })
++    await act(async () => {
++      pluginChangedListener?.()
++      await waitForHappyDomTasks()
++    })
++    expect(container.querySelector('iframe')).toBe(iframe)
++    expect(iframe?.getAttribute('srcdoc')).toBe(initialSrcdoc)
++    expect(iframe?.getAttribute('data-selected-session')).toBe('session-one')
++    expect(postMessage).toHaveBeenCalledWith({ type: 'orca-panel-data', data: { count: 2 } }, '*')
++    expect(watchdogStopMock).not.toHaveBeenCalled()
++    expect(watchdogStartMock).toHaveBeenCalledTimes(1)
++  })
+   it('renders the panel HTML in a scripts-only sandboxed iframe', async () => {
+     readPanelEntryMock.mockResolvedValue({
+       html: '<h1>Hello plugin</h1>',
+diff --git a/src/renderer/src/components/right-sidebar/PluginPanel.tsx b/src/renderer/src/components/right-sidebar/PluginPanel.tsx
+index b8c8ee87..4f99b865 100644
+--- a/src/renderer/src/components/right-sidebar/PluginPanel.tsx
++++ b/src/renderer/src/components/right-sidebar/PluginPanel.tsx
+@@ -17,6 +17,8 @@ import { buildPanelDesignTokenCss, currentPanelColorScheme } from './plugin-pane
+ import { usePluginPanelThemeRevision } from './use-plugin-panel-theme-revision'
+ import { usePluginPanels, usePluginPanelsStore } from '@/store/plugin-panels'
+ import { translate } from '@/i18n/i18n'
++import { PANEL_DATA_TYPE, readPanelDataDocument } from './plugin-panel-data-document'
++import { createDashboardTerminalNavigation } from './dashboard-terminal-navigation'
+ 
+ type PluginPanelProps = {
+   tabKey: string
+@@ -26,7 +28,7 @@ type PluginPanelEntryState =
+   | { status: 'loading' }
+   | { status: 'error' }
+   | { status: 'unresponsive' }
+-  | { status: 'ready'; shellHtml: string; documentRevision: number }
++  | { status: 'ready'; shellHtml: string; documentRevision: number; panelData: unknown }
+ 
+ function PluginPanelMessage({ children }: { children: React.ReactNode }): React.JSX.Element {
+   return (
+@@ -109,6 +111,27 @@ function PluginPanel({ tabKey }: PluginPanelProps): React.JSX.Element {
+     return () => watchdog.stop()
+   }, [loadedFrameKey, panelFrameKey, watchdog])
+ 
++  useEffect(() => {
++    if (entryState.status !== 'ready' || loadedFrameKey !== panelFrameKey || entryState.panelData === undefined) {
++      return
++    }
++    iframeRef.current?.contentWindow?.postMessage({ type: PANEL_DATA_TYPE, data: entryState.panelData }, '*')
++  }, [entryState, loadedFrameKey, panelFrameKey])
++
++  useEffect(() => {
++    if (!sessionToken || entryState.status !== 'ready') return
++    let active = true
++    const handler = createDashboardTerminalNavigation({
++      pluginKey, panelId,
++      getWindow: () => iframeRef.current?.contentWindow ?? null,
++      getData: () => entryState.panelData,
++      isActive: () => active,
++      focus: terminal => window.api.runtime.call({ method: 'terminal.focus', params: { terminal, navigation: 'host' } })
++    })
++    window.addEventListener('message', handler)
++    return () => { active = false; window.removeEventListener('message', handler) }
++  }, [pluginKey, panelId, sessionToken, entryState])
++
+   useEffect(() => {
+     if (!pluginKey || !panelId) {
+       return
+@@ -144,15 +167,22 @@ function PluginPanel({ tabKey }: PluginPanelProps): React.JSX.Element {
+           // document or restarting its watchdog.
+           setSessionToken(entry.sessionToken)
+           setPanelHealth(tabKey, 'healthy')
+-          if (entry.html !== currentHtml) {
+-            currentHtml = entry.html
++          const document = readPanelDataDocument(entry.html)
++          if (document.identity !== currentHtml) {
++            currentHtml = document.identity
+             documentRevision += 1
+             setPanelHealth(tabKey, 'healthy')
+             setEntryState({
+               status: 'ready',
+               shellHtml: entry.html,
+-              documentRevision
++              documentRevision,
++              panelData: document.data
+             })
++          } else if (document.data !== undefined) {
++            // Data refreshes keep the guest document, route, scroll and watchdog alive.
++            setEntryState((previous) => previous.status === 'ready'
++              ? { ...previous, panelData: document.data }
++              : previous)
+           }
+         })
+         .catch(() => {
