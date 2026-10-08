@@ -94,6 +94,7 @@
 /*__INLINE:threads__*/
 
 // ------------------------------------------------------------------ data
+const TEMPLATE_VERSION = 'v6'
 let DATA = JSON.parse(document.getElementById('orca-panel-data').textContent || '{}')
 const PREVIEW = window.parent === window                       // opened in a normal browser (server /panel-preview)
 const PREVIEW_TOKEN = document.querySelector('meta[name="sr-token"]')?.content ?? null
@@ -239,7 +240,7 @@ function render({ keepScroll = false } = {}) {
 }
 function renderTabs() {
   document.getElementById('tabs').innerHTML = h`<button type="button" class="tab ${ROUTE === 'review' ? 'active' : ''}" data-route="review">리뷰</button><button type="button" class="tab ${ROUTE === 'overview' ? 'active' : ''}" data-route="overview">전체 PR·세션</button>`
-  for (const tab of document.querySelectorAll('.tab')) tab.addEventListener('click', () => { ROUTE = tab.dataset.route; render({ keepScroll: false }); window.scrollTo(0, 0) })
+  for (const tab of document.querySelectorAll('.tab')) tab.addEventListener('pointerdown', (event) => { event.preventDefault(); ROUTE = tab.dataset.route; render({ keepScroll: false }); window.scrollTo(0, 0) })
 }
 
 function renderOverview() {
@@ -275,13 +276,15 @@ function renderReview(session) {
     return
   }
   if (!session) {
-    app.innerHTML = h`<div class="card"><div class="card-body"><div style="margin-bottom:6px"><strong>${ACTIVE_WORKTREE.repoDisplayName}</strong> <span class="mono">${ACTIVE_WORKTREE.branch}</span></div><div class="muted small" style="margin-bottom:8px">이 worktree 의 리뷰 세션이 아직 없습니다.</div><button type="button" class="btn primary" id="startSession">리뷰 세션 시작</button></div></div>${raw(bridgeStatusHtml())}`
+    app.innerHTML = h`<div class="card"><div class="card-body"><div class="row" style="margin-bottom:6px">${raw(worktreeSwitcherHtml())}</div><div style="margin-bottom:6px"><strong>${ACTIVE_WORKTREE.repoDisplayName}</strong> <span class="mono">${ACTIVE_WORKTREE.branch}</span></div><div class="muted small" style="margin-bottom:8px">이 worktree 의 리뷰 세션이 아직 없습니다.</div><button type="button" class="btn primary" id="startSession">리뷰 세션 시작</button></div></div>${raw(bridgeStatusHtml())}`
     app.querySelector('#startSession').addEventListener('click', () => act(() => send({ op: 'session.open', worktreePath: ACTIVE_WORKTREE.path })))
+    bindWorktreeSwitcher()
     bindBridgePicker()
     return
   }
   const { session: s, diff } = session
   const files = diff.files || []
+  const switcher = worktreeSwitcherHtml()
   if (!UI.file || !files.some((f) => f.path === UI.file)) UI.file = files[0]?.path || null
   const runnable = countRunnable(s.threads)
   const run = DATA.runs?.[s.id] || null
@@ -291,7 +294,7 @@ function renderReview(session) {
   const counts = countByFile(s.threads)
   app.innerHTML = h`
     <div class="card" style="margin-top:8px"><div class="card-body">
-      <div class="row"><span class="badge">${s.status}</span><span class="muted small">base ${s.baseRef}</span><span class="muted small">파일 ${files.length}</span>${diff.error ? raw(h`<span class="badge warn">${diff.error}</span>`) : ''}</div>
+      <div class="row">${raw(switcher)}<span class="badge">${s.status}</span><span class="muted small">base ${s.baseRef}</span><span class="muted small">파일 ${files.length}</span>${diff.error ? raw(h`<span class="badge warn">${diff.error}</span>`) : ''}</div>
       <div class="row" style="margin-top:6px">
         <select id="agent">${raw(['claude', 'codex'].map((name) => h`<option value="${name}" ${raw(s.agent === name ? 'selected' : '')} ${raw(agents[name]?.available ? '' : 'disabled')}>${name}${agents[name]?.available ? '' : ' (없음)'}</option>`).join(''))}</select>
         <button type="button" class="btn primary" id="runFix" ${raw(canRun ? '' : 'disabled')} title="${!agents[s.agent]?.available ? s.agent + ' CLI 없음' : runnable === 0 ? '열려 있고 최신인 스레드 없음' : live ? '실행 중' : ''}">리뷰 완료 및 AI 수정 (${runnable})</button>
@@ -316,8 +319,23 @@ function renderReview(session) {
     if (picked && picked.panelTruncated) act(() => send({ op: 'view', sessionId: s.id, route: ROUTE, file: UI.file, scroll: 0, loadFile: true }))
     else sendView(s.id)
   })
+  bindWorktreeSwitcher()
   bindBridgePicker()
   renderFile(session)
+}
+
+function worktreeSwitcherHtml() {
+  const worktrees = DATA.worktrees || []
+  return h`<select id="worktreeSwitch" title="worktree 선택">${raw(worktrees.map((w) => h`<option value="${w.path}" ${raw(ACTIVE_WORKTREE && w.path === ACTIVE_WORKTREE.path ? 'selected' : '')}>${w.repoDisplayName} · ${w.branch}${w.sessionId ? ' ●' : ''}</option>`).join(''))}</select>`
+}
+function bindWorktreeSwitcher() {
+  app.querySelector('#worktreeSwitch')?.addEventListener('change', (event) => {
+    UI.manualWorktree = event.target.value
+    UI.manualContextKey = contextKey()
+    ACTIVE_WORKTREE = (DATA.worktrees || []).find((w) => w.path === UI.manualWorktree) || ACTIVE_WORKTREE
+    UI.file = null; UI.selection = null; UI.pendingForm = false
+    render()
+  })
 }
 
 function bridgeStatusHtml() {
@@ -338,7 +356,7 @@ function bindBridgePicker() {
     if (!terminalId) return
     UI.picker = terminalId
     const short = (id) => String(id).replace(/^term_/, 't_').slice(0, 10)
-    const diag = btoa(unescape(encodeURIComponent(JSON.stringify({ gen: DATA.generatedAt, ctx: CONTEXT && { d: CONTEXT.displayName, b: CONTEXT.branch, t: (CONTEXT.terminals || []).map((t) => short(t.id)) }, active: ACTIVE_WORKTREE && { p: ACTIVE_WORKTREE.path.split('/').pop(), s: ACTIVE_WORKTREE.sessionId, bridge: (ACTIVE_WORKTREE.bridgeTerminalIds || []).map(short), term: (ACTIVE_WORKTREE.terminalIds || []).filter((x) => String(x).startsWith('term_')).map(short) }, wts: (DATA.worktrees || []).map((w) => [w.path.split('/').pop(), (w.terminalIds || []).filter((x) => String(x).startsWith('term_')).map(short)]) }))))
+    const diag = btoa(unescape(encodeURIComponent(JSON.stringify({ v: TEMPLATE_VERSION, manual: UI.manualWorktree, gen: DATA.generatedAt, ctx: CONTEXT && { d: CONTEXT.displayName, b: CONTEXT.branch, t: (CONTEXT.terminals || []).map((t) => short(t.id)) }, active: ACTIVE_WORKTREE && { p: ACTIVE_WORKTREE.path.split('/').pop(), s: ACTIVE_WORKTREE.sessionId, bridge: (ACTIVE_WORKTREE.bridgeTerminalIds || []).map(short), term: (ACTIVE_WORKTREE.terminalIds || []).filter((x) => String(x).startsWith('term_')).map(short) }, wts: (DATA.worktrees || []).map((w) => [w.path.split('/').pop(), (w.terminalIds || []).filter((x) => String(x).startsWith('term_')).map(short)]) }))))
     const text = '"' + (DATA.launcher || '$HOME/Library/Application Support/OrcaLocalSelfReview/bin/open-review') + '" --bridge --panel-terminal ' + terminalId + ' --diag ' + diag
     try {
       const result = await hostCall('terminal.sendText', { terminalId, text, enter: true })
@@ -508,7 +526,12 @@ loadContext().then(() => {
   if (!ACTIVE_WORKTREE && (DATA.worktrees || []).length === 0) ROUTE = 'overview'
   render()
 })
-window.addEventListener('focus', () => loadContext().then(() => render({ keepScroll: true })))
+// Re-read the host context on focus, but only re-render when the focused worktree really changed:
+// a full re-render in the middle of a click swallows that click (the target node is replaced).
+window.addEventListener('focus', () => {
+  const before = contextKey()
+  loadContext().then(() => { if (contextKey() !== before) render({ keepScroll: true }) })
+})
 </script>
 </body>
 </html>
