@@ -9,7 +9,7 @@ import { ApiError, SessionStore, summarizeSession, writeJsonAtomic } from './lib
 import { GitReader, readRepoFileLines } from './lib/git.mjs'
 import { OrcaReader } from './lib/orca.mjs'
 import { GitHubReader, parseGitHubRemote } from './lib/github.mjs'
-import { RunManager, defaultAgentCommands } from './lib/runs.mjs'
+import { RunManager, defaultAgentCommands, pickRunToShow } from './lib/runs.mjs'
 import { annotateThreads } from './lib/anchor.mjs'
 import { buildPrompt, selectRunnableThreads } from './lib/prompt.mjs'
 import { parseUnifiedDiff } from './lib/diff-parser.mjs'
@@ -80,7 +80,8 @@ export function createServer({
     agentCommands: agentCommands ?? defaultAgentCommands((name) => resolveBin(name)),
     git,
     now,
-    onFinished: (run) => { try { store.setStatus(run.sessionId, 'rechecking') } catch { /* session gone */ } publishPanel('run-finished') }
+    onFinished: (run) => { try { store.setStatus(run.sessionId, 'rechecking') } catch { /* session gone */ } publishPanel('run-finished') },
+    ignoreChangedPaths: [join(panelRoot, 'panel.html')]
   })
   const startedAt = now()
   const bridgesPath = join(homeDir, 'runtime', 'bridges.json')
@@ -297,8 +298,11 @@ export function createServer({
     }
     const runList = runs.list()
     const runsBySession = {}
-    for (const run of runList) {
-      if (runsBySession[run.sessionId]) continue
+    const bySession = new Map()
+    for (const run of runList) { if (!bySession.has(run.sessionId)) bySession.set(run.sessionId, []); bySession.get(run.sessionId).push(run) }
+    for (const [sessionId, sessionRuns] of bySession) {
+      const run = pickRunToShow(sessionRuns)
+      if (!run) continue
       const { log } = runs.readLog(run.id, 0)
       let aiChanges = null
       if (run.status !== 'running' && run.status !== 'queued' && (run.changedFiles || []).length && run.cwd && existsSync(run.cwd)) {
