@@ -15,6 +15,8 @@ import { buildPrompt, selectRunnableThreads } from './lib/prompt.mjs'
 import { parseUnifiedDiff } from './lib/diff-parser.mjs'
 import { execCommand } from './lib/exec.mjs'
 import { enrichPath, resolveBin } from './lib/bins.mjs'
+import { PanelPublisher, trimFilesForPanel, PANEL_LOG_TAIL_BYTES } from './lib/panel-publisher.mjs'
+import { validateOp } from './lib/bridge-ops.mjs'
 
 export const PROTOCOL_VERSION = 1
 const CONTENT_TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.json': 'application/json; charset=utf-8' }
@@ -57,7 +59,8 @@ export function createServer({
   idleMs = 15 * 60_000,
   now = () => new Date().toISOString(),
   enrichEnvironment = true,
-  exitImpl = (code) => process.exit(code)
+  exitImpl = (code) => process.exit(code),
+  panelDebounceMs = 150
 }) {
   if (enrichEnvironment) enrichPath(process.env)
   mkdirSync(homeDir, { recursive: true, mode: 0o700 })
@@ -72,9 +75,15 @@ export function createServer({
     agentCommands: agentCommands ?? defaultAgentCommands((name) => resolveBin(name)),
     git,
     now,
-    onFinished: (run) => { try { store.setStatus(run.sessionId, 'rechecking') } catch { /* session gone */ } }
+    onFinished: (run) => { try { store.setStatus(run.sessionId, 'rechecking') } catch { /* session gone */ } publishPanel('run-finished') }
   })
   const startedAt = now()
+  const bridgesPath = join(homeDir, 'runtime', 'bridges.json')
+  const bridges = readBridges(bridgesPath)            // worktreePath → { terminalIds: string[], registeredAt }
+  const viewState = {}                                 // sessionId → { route, file, scroll }
+  let lastOverview = null
+  let runPollTimer = null
+  const publisher = new PanelPublisher({ pluginRoot, debounceMs: panelDebounceMs, collect: collectPanelData, log: (message) => process.stderr.write(`${message}\n`) })
   let lastActivity = Date.now()
   let idleTimer = null
   let httpServer = null
@@ -206,6 +215,118 @@ export function createServer({
     return run
   }
 
+  function readBridges(path) {
+    try { return existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : {} } catch { return {} }
+  }
+
+  function saveBridges() {
+    try { mkdirSync(join(homeDir, 'runtime'), { recursive: true, mode: 0o700 }); writeJsonAtomic(bridgesPath, bridges) } catch { /* best effort */ }
+  }
+
+  function publishPanel(reason) {
+    return publisher.schedule(reason)
+  }
+
+  let lastRunSignature = ''
+  function runSignature() {
+    return runs.list().map((run) => `${run.id}:${run.status}`).join(',')
+  }
+  function ensureRunPolling() {
+    if (runPollTimer) return
+    lastRunSignature = runSignature()
+    runPollTimer = setInterval(() => {
+      const signature = runSignature()
+      if (signature !== lastRunSignature) { lastRunSignature = signature; publishPanel('run-progress') }
+      if (!runs.hasRunning()) { clearInterval(runPollTimer); runPollTimer = null }
+    }, 2000)
+    runPollTimer.unref?.()
+  }
+
+  async function collectPanelData(reason) {
+    const sessions = {}
+    const sessionList = store.listSessions()
+    for (const summary of sessionList) {
+      if (summary.status === 'completed') continue
+      try {
+        const detail = await sessionDetail(summary.id)
+        sessions[summary.id] = { session: detail.session, diff: { ...detail.diff, files: trimFilesForPanel(detail.diff.files) } }
+      } catch (error) {
+        sessions[summary.id] = { session: store.getSession(summary.id), diff: { files: [], error: error.message } }
+      }
+    }
+    const runList = runs.list()
+    const runsBySession = {}
+    for (const run of runList) {
+      if (runsBySession[run.sessionId]) continue
+      const { log } = runs.readLog(run.id, 0)
+      runsBySession[run.sessionId] = { ...run, fingerprintsBefore: undefined, logTail: log.slice(-PANEL_LOG_TAIL_BYTES) }
+    }
+    if (reason !== 'run-progress' || !lastOverview) {
+      try { lastOverview = await overview() } catch (error) { lastOverview = { repos: [], sessions: sessionList, github: { enabled: false, lastFetchedAt: null, errors: [{ repo: '(orca)', message: error.message }] } } }
+    }
+    const worktrees = lastOverview.repos.flatMap((repo) => repo.worktrees.map((worktree) => ({
+      worktreeId: worktree.worktreeId,
+      path: worktree.path,
+      branch: worktree.branch,
+      displayName: worktree.displayName,
+      repoDisplayName: repo.displayName,
+      sessionId: sessionList.find((session) => session.kind === 'local' && session.status !== 'completed' && session.repoPath === worktree.path)?.id ?? null,
+      bridgeTerminalIds: bridges[worktree.path]?.terminalIds ?? []
+    })))
+    return {
+      schemaVersion: 1,
+      generatedAt: now(),
+      reason,
+      server: { port, pid: process.pid },
+      launcher: join(homeDir, 'bin', 'open-review'),
+      agents: runs.availability(),
+      worktrees,
+      sessions,
+      sessionList,
+      runs: runsBySession,
+      overview: { repos: lastOverview.repos, github: lastOverview.github },
+      viewState
+    }
+  }
+
+  async function dispatchBridgeOp(op) {
+    const valid = validateOp(op)
+    if (!valid.ok) throw new ApiError(400, 'invalid_op', valid.error)
+    switch (op.op) {
+      case 'ping': return { ok: true }
+      case 'view': {
+        viewState[op.sessionId] = { route: op.route ?? 'review', file: op.file ?? null, scroll: Number.isFinite(op.scroll) ? op.scroll : 0 }
+        return { ok: true }
+      }
+      case 'session.open': {
+        const session = await createSession({ kind: 'local', repoPath: op.worktreePath, baseRef: op.baseRef, agent: op.agent })
+        viewState[session.id] = viewState[session.id] ?? { route: 'review', file: null, scroll: 0 }
+        publishPanel('session')
+        return session
+      }
+      case 'session.patch': { const result = store.updateSession(op.sessionId, op); publishPanel('session'); return result }
+      case 'session.complete': { const session = store.getSession(op.sessionId); const result = store.updateSession(op.sessionId, { revision: session.revision, status: 'completed' }); publishPanel('session'); return result }
+      case 'session.delete': { store.deleteSession(op.sessionId); delete viewState[op.sessionId]; publishPanel('session'); return { ok: true } }
+      case 'thread.add': { const result = store.addThread(op.sessionId, op); publishPanel('thread'); return result }
+      case 'thread.patch': { const result = store.updateThread(op.sessionId, op.threadId, op); publishPanel('thread'); return result }
+      case 'thread.delete': { const result = store.deleteThread(op.sessionId, op.threadId, op); publishPanel('thread'); return result }
+      case 'comment.add': { const result = store.addComment(op.sessionId, op.threadId, op); publishPanel('thread'); return result }
+      case 'comment.patch': { const result = store.updateComment(op.sessionId, op.threadId, op.commentId, op); publishPanel('thread'); return result }
+      case 'comment.delete': { const result = store.deleteComment(op.sessionId, op.threadId, op.commentId, op); publishPanel('thread'); return result }
+      case 'run.start': { const run = await startRun(op.sessionId, op); ensureRunPolling(); publishPanel('run'); return run }
+      case 'run.cancel': { const run = runs.cancel(op.runId); publishPanel('run'); return run }
+      case 'overview.refresh': { lastOverview = await overview({ force: true }); publishPanel('overview'); return { ok: true } }
+      case 'wide': {
+        const session = store.getSession(op.sessionId)
+        const url = `http://127.0.0.1:${port}/#/sessions/${session.id}`
+        const result = await orca.exec(orca.orcaBinary, ['tab', 'create', '--url', url, '--json'], { timeout: 15_000 }).catch((error) => ({ code: 1, stderr: error.message, stdout: '' }))
+        if (result.code !== 0) throw new ApiError(502, 'orca_failed', `orca tab create failed: ${(result.stderr || result.stdout).trim()}`)
+        return { ok: true, url }
+      }
+      default: throw new ApiError(400, 'invalid_op', `unhandled op ${op.op}`)
+    }
+  }
+
   function serveStatic(request, response, urlPath) {
     const uiDir = resolve(join(pluginRoot, 'ui'))
     if (urlPath === '/') {
@@ -231,6 +352,14 @@ export function createServer({
 
     if (path === '/health') return sendJson(response, 200, { ok: true, protocolVersion: PROTOCOL_VERSION, pid: process.pid, startedAt })
     if (path === '/' || path.startsWith('/ui/')) { touch(); return serveStatic(request, response, path) }
+    if (path === '/panel-preview') {
+      touch()
+      await publisher.settle()
+      const panelPath = join(pluginRoot, 'panel', 'index.html')
+      const html = (existsSync(panelPath) ? readFileSync(panelPath, 'utf8') : PLACEHOLDER_HTML).replace(/<head>/i, `<head>\n<meta name="sr-token" content="${token}">`)
+      response.writeHead(200, { 'Content-Type': CONTENT_TYPES['.html'], 'Cache-Control': 'no-store' })
+      return response.end(html)
+    }
     if (!path.startsWith('/api/')) return sendJson(response, 404, { error: { code: 'not_found', message: 'no such route' } })
     touch()
 
@@ -265,36 +394,58 @@ export function createServer({
         const { log, next } = runs.readLog(runId, Number(url.searchParams.get('logFrom') ?? 0))
         return sendJson(response, 200, { run, log, logNext: next })
       }
-      if (method === 'POST' && segments[2] === 'cancel') return sendJson(response, 200, runs.cancel(runId))
+      if (method === 'POST' && segments[2] === 'cancel') { const run = runs.cancel(runId); publishPanel('run'); return sendJson(response, 200, run) }
     }
+    if (segments[0] === 'bridge') {
+      if (segments[1] === 'register' && method === 'POST') {
+        if (typeof body.worktreePath !== 'string') throw new ApiError(400, 'invalid_field', 'worktreePath required')
+        const ids = new Set(bridges[body.worktreePath]?.terminalIds ?? [])
+        for (const id of [body.terminalHandle, body.panelTerminalId, body.ptyId]) if (typeof id === 'string' && id) ids.add(id)
+        bridges[body.worktreePath] = { terminalIds: [...ids], registeredAt: now() }
+        saveBridges()
+        publishPanel('bridge')
+        return sendJson(response, 200, { ok: true, worktreePath: body.worktreePath, terminalIds: bridges[body.worktreePath].terminalIds })
+      }
+      if (segments[1] === 'unregister' && method === 'POST') {
+        if (typeof body.worktreePath === 'string') { delete bridges[body.worktreePath]; saveBridges(); publishPanel('bridge') }
+        return sendJson(response, 200, { ok: true })
+      }
+      if (segments.length === 1 && method === 'POST') return sendJson(response, 200, { ok: true, result: await dispatchBridgeOp(body) })
+      if (segments[1] === 'status' && method === 'GET') {
+        const worktreePath = url.searchParams.get('worktree')
+        return sendJson(response, 200, { bridges: worktreePath ? { [worktreePath]: bridges[worktreePath] ?? null } : bridges })
+      }
+    }
+    if (segments[0] === 'panel' && segments[1] === 'publish' && method === 'POST') { await publisher.flush('manual'); return sendJson(response, 200, { ok: true }) }
     if (segments[0] === 'sessions') {
       if (segments.length === 1) {
         if (method === 'GET') return sendJson(response, 200, store.listSessions())
         if (method === 'POST') {
           const before = store.listSessions().map((entry) => entry.id)
           const session = await createSession(body)
+          publishPanel('session')
           return sendJson(response, before.includes(session.id) ? 200 : 201, session)
         }
       }
       const sessionId = segments[1]
       if (segments.length === 2) {
         if (method === 'GET') return sendJson(response, 200, await sessionDetail(sessionId))
-        if (method === 'PATCH') return sendJson(response, 200, store.updateSession(sessionId, body))
-        if (method === 'DELETE') { store.deleteSession(sessionId); return sendJson(response, 200, { ok: true }) }
+        if (method === 'PATCH') { const result = store.updateSession(sessionId, body); publishPanel('session'); return sendJson(response, 200, result) }
+        if (method === 'DELETE') { store.deleteSession(sessionId); publishPanel('session'); return sendJson(response, 200, { ok: true }) }
       }
       if (segments[2] === 'threads') {
-        if (segments.length === 3 && method === 'POST') return sendJson(response, 200, store.addThread(sessionId, body))
+        if (segments.length === 3 && method === 'POST') { const result = store.addThread(sessionId, body); publishPanel('thread'); return sendJson(response, 200, result) }
         const threadId = segments[3]
-        if (segments.length === 4 && method === 'PATCH') return sendJson(response, 200, store.updateThread(sessionId, threadId, body))
-        if (segments.length === 4 && method === 'DELETE') return sendJson(response, 200, store.deleteThread(sessionId, threadId, body))
+        if (segments.length === 4 && method === 'PATCH') { const result = store.updateThread(sessionId, threadId, body); publishPanel('thread'); return sendJson(response, 200, result) }
+        if (segments.length === 4 && method === 'DELETE') { const result = store.deleteThread(sessionId, threadId, body); publishPanel('thread'); return sendJson(response, 200, result) }
         if (segments[4] === 'comments') {
-          if (segments.length === 5 && method === 'POST') return sendJson(response, 200, store.addComment(sessionId, threadId, body))
+          if (segments.length === 5 && method === 'POST') { const result = store.addComment(sessionId, threadId, body); publishPanel('thread'); return sendJson(response, 200, result) }
           const commentId = segments[5]
-          if (segments.length === 6 && method === 'PATCH') return sendJson(response, 200, store.updateComment(sessionId, threadId, commentId, body))
-          if (segments.length === 6 && method === 'DELETE') return sendJson(response, 200, store.deleteComment(sessionId, threadId, commentId, body))
+          if (segments.length === 6 && method === 'PATCH') { const result = store.updateComment(sessionId, threadId, commentId, body); publishPanel('thread'); return sendJson(response, 200, result) }
+          if (segments.length === 6 && method === 'DELETE') { const result = store.deleteComment(sessionId, threadId, commentId, body); publishPanel('thread'); return sendJson(response, 200, result) }
         }
       }
-      if (segments[2] === 'runs' && segments.length === 3 && method === 'POST') return sendJson(response, 202, await startRun(sessionId, body))
+      if (segments[2] === 'runs' && segments.length === 3 && method === 'POST') { const run = await startRun(sessionId, body); ensureRunPolling(); publishPanel('run'); return sendJson(response, 202, run) }
     }
     sendJson(response, 404, { error: { code: 'not_found', message: `no route for ${method} ${path}` } })
   }
@@ -337,11 +488,14 @@ export function createServer({
     port = httpServer.address().port
     writeRuntimeFile()
     scheduleIdleCheck()
+    await publisher.flush('start')
+    if (runs.hasRunning()) ensureRunPolling()
     return port
   }
 
   async function close() {
     if (idleTimer) clearInterval(idleTimer)
+    if (runPollTimer) clearInterval(runPollTimer)
     removeRuntimeFile()
     if (!httpServer) return
     await new Promise((resolveClose) => { httpServer.closeAllConnections?.(); httpServer.close(() => resolveClose()) })
@@ -353,6 +507,7 @@ export function createServer({
     close,
     get port() { return port },
     get token() { return token },
+    settlePanel: () => publisher.settle(),
     store,
     runs
   }

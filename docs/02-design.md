@@ -2,6 +2,17 @@
 
 > 근거: [01-requirements-analysis-codex.md](./01-requirements-analysis-codex.md) (Codex 분석). 이 문서는 그 분석의 "1차 릴리스(FR-01~FR-18)" 범위를 Orca 1.4.222 plugin API v0 제약 아래 구현하기 위한 확정 설계다. 구현자(Claude)는 이 문서의 계약을 그대로 따른다.
 
+## v2 변경 (패널 네이티브)
+
+사용자 요구("리뷰 화면이 우측 패널 탭 안에 보여야 한다")에 따라 v1 의 "내장 브라우저 탭" 구조를 **패널 네이티브** 구조로 바꿨다. 근거 사실 2가지를 앱 번들에서 추가 확인했다.
+
+| 사실 | 위치 | 활용 |
+|---|---|---|
+| 개발 플러그인 경로는 `DMo` 하우스키핑의 `devWatcher` 가 감시하며, 변경 시 300ms 디바운스 후 `refresh()` → `notifyChanged` → 렌더러가 `readPanelEntry` 로 패널 HTML 을 다시 읽는다 | `main/index.js` `DMo.sync`, `EMo.scheduleRefresh` | 서버가 `panel/index.html` 을 재생성하면 패널이 갱신된다 (서버 → 패널 채널) |
+| 매니페스트에 keybindings/vmRecipes/agents 가 있으면(`YI`) 개발 플러그인 폴더의 내용 해시가 승인 지문에 포함된다 | `pgr`/`mgr` | 키바인딩을 제거해 파일 재생성이 승인을 풀지 않게 한다 |
+
+패널 → 서버 채널은 여전히 `terminal.sendText` 뿐이므로 **브리지 터미널**(`open-review --bridge`, raw 모드로 입력을 받아 `/api/bridge` 로 전달)을 둔다. 데이터 흐름·프로토콜은 아래 "패널 네이티브 설계" 절, 코드는 `server/lib/panel-publisher.mjs`·`server/lib/bridge-ops.mjs`·`panel/template.html`·`worker/launcher-cli.mjs`.
+
 ## Overview
 
 - 목표 = PR 생성 전 로컬 셀프 리뷰. GitHub PR 화면과 같은 diff 리뷰·드래그 멀티라인 코멘트·스레드 → "리뷰 완료 및 AI 수정" 버튼으로 Claude/Codex 헤드리스 실행 → 재검토.
@@ -235,3 +246,34 @@ activate(ctx):
 ## Out of Scope (1차)
 
 split diff, 파일별 확인 완료, 세션 내보내기, Orca 에이전트 터미널로 프롬프트 전송(헤드리스 실행이 기본), GitHub Enterprise, 자동 commit/push, PR 생성.
+
+
+## 패널 네이티브 설계 (v2)
+
+### 데이터 흐름
+
+```
+[서버] 변경 발생(세션·스레드·실행 상태) → PanelPublisher.schedule() (150ms 디바운스)
+     → panel/template.html + <script id="orca-panel-data"> JSON → panel/index.html (tmp+rename)
+     → Orca devWatcher(300ms) → plugins refresh → 패널 iframe 재로드 (패치 호스트: orca-panel-data 메시지로 데이터만 교체)
+[패널] 조작 → op JSON → `SR <base64url>` 1줄 (3,800자 초과 시 `SRC <id> <i> <n> <data>` 청크)
+     → terminal.sendText(브리지 터미널) → bridge CLI (raw 모드, 에코 없음) → POST /api/bridge → 서버 처리 → 재생성
+```
+
+### 패널 데이터 (`orca-panel-data`)
+`{ schemaVersion:1, generatedAt, reason, server:{port,pid}, launcher, agents, worktrees:[{worktreeId,path,branch,displayName,repoDisplayName,sessionId,bridgeTerminalIds}], sessions:{[id]:{session,diff}}, sessionList, runs:{[sessionId]: AIRun+logTail}, overview:{repos,github}, viewState:{[sessionId]:{route,file,scroll}} }`
+- 완료되지 않은 세션만 포함. 파일당 diff 3,000줄 초과는 `panelTruncated` (넓게 보기 안내). 전체 6MB 초과 시 sessions 제거 + `oversized`.
+- 패널은 `workspace.readContext` 의 displayName·branch 로 `worktrees` 에서 현재 worktree 를 고른다. 오버뷰에서 수동으로 고른 worktree 는 컨텍스트가 바뀌기 전까지 유지.
+- 브리지 터미널 id 매칭: `bridgeTerminalIds ∩ readContext.terminals[].id`. 브리지는 `ORCA_TERMINAL_HANDLE`·ptyId·(패널이 고른 id) 를 모두 등록한다.
+
+### 브리지 op (`server/lib/bridge-ops.mjs`)
+`session.open|patch|delete|complete`, `thread.add|patch|delete`, `comment.add|patch|delete`, `run.start|cancel`, `overview.refresh`, `view`, `wide`, `ping`. `view` 는 재생성을 일으키지 않고 viewState 만 저장한다(스크롤·파일 복원용). 실행 중에는 2초마다 상태 변화가 있을 때만 재생성한다(로그 증가만으로는 재로드하지 않음).
+
+### 재로드와 입력 보존
+스톡 호스트는 재생성 때 iframe 을 통째로 다시 로드한다. 패널은 작성 중인 코멘트 초안을 메모리(UI.draft)에 두고 재렌더 시 복원하지만, 재로드 자체는 초안을 잃는다. 그래서 재생성은 사용자의 조작 결과(코멘트 등록 등)와 실행 상태 전이에서만 일어난다.
+
+### 검증 (2026-10-08)
+- `node --test test/*.test.mjs` 69건 통과 (패널 문서·브리지 op·브리지 통합 포함).
+- 실측: 브리지 터미널 생성 → `orca terminal send` 로 `SR …` 1줄 입력 → 서버 스레드 추가 → `panel/index.html` 재생성(reason=thread) 확인.
+- 실측: `/panel-preview` 를 내장 브라우저에서 열어 오버뷰 → 세션 열기 → 거터 선택 → 코멘트 등록 → 스레드 렌더 확인.
+- 미검증: 실제 Orca 사이드바 패널에서의 표시(스크린샷 권한 없음) — 사용자 확인 필요.

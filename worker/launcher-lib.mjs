@@ -196,3 +196,42 @@ export function installLauncher({ homeDir, pluginRoot, nodeBinary = process.exec
 function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`
 }
+
+function shellQuoteArg(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`
+}
+
+async function listTerminals({ execImpl, orcaBinary, cwd }) {
+  try {
+    const result = await execImpl(orcaBinary, ['terminal', 'list', '--json'], cwd ? { cwd } : {})
+    const parsed = JSON.parse(result.stdout)
+    return parsed.ok ? parsed.result?.terminals ?? [] : []
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Makes sure a live bridge terminal exists for the worktree: asks the server
+ * which terminal ids are registered, checks they are still alive, otherwise
+ * creates a new Orca terminal running `<launcher> --bridge`.
+ */
+export async function ensureBridgeTerminal({ runtime, worktreePath, launcherPath, fetchImpl = globalThis.fetch, execImpl = execCommand, orcaBinary = resolveOrcaBinary() }) {
+  let registered = []
+  try {
+    const response = await fetchImpl(`http://127.0.0.1:${runtime.port}/api/bridge/status?worktree=${encodeURIComponent(worktreePath)}`, {
+      headers: { 'X-SR-Token': runtime.token }, signal: AbortSignal.timeout(3000)
+    })
+    const payload = await response.json()
+    registered = payload?.bridges?.[worktreePath]?.terminalIds ?? []
+  } catch { registered = [] }
+  const terminals = await listTerminals({ execImpl, orcaBinary, cwd: worktreePath })
+  const alive = terminals.find((terminal) => registered.includes(terminal.handle) || registered.includes(terminal.ptyId))
+  if (alive) return { created: false, terminalHandle: alive.handle }
+  const command = `${shellQuoteArg(launcherPath)} --bridge`
+  const result = await execImpl(orcaBinary, ['terminal', 'create', '--worktree', `path:${worktreePath}`, '--title', 'Self Review bridge', '--command', command, '--json'], { cwd: worktreePath })
+  if (result.code !== 0) throw new Error(`orca terminal create failed: ${(result.stderr || result.stdout).trim()}`)
+  let handle = null
+  try { handle = JSON.parse(result.stdout).result?.terminal?.handle ?? null } catch { /* ignore */ }
+  return { created: true, terminalHandle: handle }
+}

@@ -31,7 +31,7 @@ test('activate registers the three manifest commands and installs the launcher',
   try {
     const { context, registered, logs } = fakeContext()
     await activate(context)
-    assert.deepEqual([...registered.keys()].sort(), ['open-overview', 'open-review', 'stop-server'])
+    assert.deepEqual([...registered.keys()].sort(), ['open-overview', 'open-review', 'open-wide', 'stop-server'])
     assert.ok(existsSync(join(homeDir, 'bin', 'open-review')), 'launcher installed into the data directory')
     assert.ok(logs.some((line) => line.includes('launcher installed')))
   } finally {
