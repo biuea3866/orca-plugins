@@ -205,11 +205,13 @@ function pickWorktree() {
   if (CONTEXT) {
     const contextTerminals = new Set((CONTEXT.terminals || []).map((t) => t.id))
     const shortBranch = String(CONTEXT.branch || '').replace(/^refs\/heads\//, '')
-    match = worktrees.find((w) => (w.terminalIds || []).some((id) => contextTerminals.has(id)))
-      || worktrees.find((w) => w.displayName === CONTEXT.displayName && w.branch === shortBranch)
-      || worktrees.find((w) => w.branch === shortBranch)
-      || worktrees.find((w) => w.displayName === CONTEXT.displayName)
-      || null
+    // Score every worktree: shared live terminals count most; branch/displayName break ties.
+    const scored = worktrees.map((w) => {
+      const shared = (w.terminalIds || []).filter((id) => contextTerminals.has(id)).length
+      const score = shared * 100 + (w.branch === shortBranch ? 10 : 0) + (w.displayName === CONTEXT.displayName ? 1 : 0)
+      return { w, score }
+    }).filter((entry) => entry.score > 0).sort((a, b) => b.score - a.score)
+    match = scored.length ? scored[0].w : null
   }
   if (!match && UI.manualWorktree) match = worktrees.find((w) => w.path === UI.manualWorktree) || null
   ACTIVE_WORKTREE = match
@@ -335,7 +337,8 @@ function bindBridgePicker() {
     const terminalId = picker.value
     if (!terminalId) return
     UI.picker = terminalId
-    const diag = btoa(unescape(encodeURIComponent(JSON.stringify({ generatedAt: DATA.generatedAt, reason: DATA.reason, context: CONTEXT, active: ACTIVE_WORKTREE && { path: ACTIVE_WORKTREE.path, sessionId: ACTIVE_WORKTREE.sessionId, bridgeIds: ACTIVE_WORKTREE.bridgeTerminalIds, terminalIds: ACTIVE_WORKTREE.terminalIds }, route: ROUTE })))).slice(0, 2500)
+    const short = (id) => String(id).replace(/^term_/, 't_').slice(0, 10)
+    const diag = btoa(unescape(encodeURIComponent(JSON.stringify({ gen: DATA.generatedAt, ctx: CONTEXT && { d: CONTEXT.displayName, b: CONTEXT.branch, t: (CONTEXT.terminals || []).map((t) => short(t.id)) }, active: ACTIVE_WORKTREE && { p: ACTIVE_WORKTREE.path.split('/').pop(), s: ACTIVE_WORKTREE.sessionId, bridge: (ACTIVE_WORKTREE.bridgeTerminalIds || []).map(short), term: (ACTIVE_WORKTREE.terminalIds || []).filter((x) => String(x).startsWith('term_')).map(short) }, wts: (DATA.worktrees || []).map((w) => [w.path.split('/').pop(), (w.terminalIds || []).filter((x) => String(x).startsWith('term_')).map(short)]) }))))
     const text = '"' + (DATA.launcher || '$HOME/Library/Application Support/OrcaLocalSelfReview/bin/open-review') + '" --bridge --panel-terminal ' + terminalId + ' --diag ' + diag
     try {
       const result = await hostCall('terminal.sendText', { terminalId, text, enter: true })
