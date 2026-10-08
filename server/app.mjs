@@ -295,7 +295,9 @@ export function createServer({
     if (reason !== 'run-progress' || !lastOverview) {
       try { lastOverview = await overview() } catch (error) { lastOverview = { repos: [], sessions: sessionList, github: { enabled: false, lastFetchedAt: null, errors: [{ repo: '(orca)', message: error.message }] } } }
     }
+    const liveTerminals = await bridgeKeeper.listTerminals()
     const worktrees = lastOverview.repos.flatMap((repo) => repo.worktrees.map((worktree) => ({
+      terminalIds: liveTerminals.filter((terminal) => terminal.worktreePath === worktree.path).flatMap((terminal) => [terminal.handle, terminal.ptyId].filter(Boolean)),
       worktreeId: worktree.worktreeId,
       path: worktree.path,
       branch: worktree.branch,
@@ -389,7 +391,7 @@ export function createServer({
     if (path === '/panel-preview') {
       touch()
       await publisher.settle()
-      const panelPath = join(panelRoot, 'panel', 'index.html')
+      const panelPath = join(panelRoot, 'panel.html')
       const html = (existsSync(panelPath) ? readFileSync(panelPath, 'utf8') : PLACEHOLDER_HTML).replace(/<head>/i, `<head>\n<meta name="sr-token" content="${token}">`)
       response.writeHead(200, { 'Content-Type': CONTENT_TYPES['.html'], 'Cache-Control': 'no-store' })
       return response.end(html)

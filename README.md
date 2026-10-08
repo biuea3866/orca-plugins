@@ -9,15 +9,15 @@ PR을 올리기 **전에** 사람이 직접 하는 셀프 리뷰 도구. GitHub 
 
 | 구성 요소 | 위치 | 역할 |
 |---|---|---|
-| **우측 사이드바 패널** | `panel/template.html` → 생성물 `panel/index.html` | 리뷰 화면 본체. 오버뷰(worktree·세션·PR)와 세션 리뷰(diff·드래그 멀티라인 코멘트·스레드·AI 실행)를 **패널 탭 안에서** 표시 |
-| 로컬 서버 | `server/main.mjs` | `127.0.0.1` 전용. git diff, 세션/코멘트 저장, AI 실행, `gh` 읽기. **데이터가 바뀔 때마다 `panel/index.html` 을 다시 생성** → Orca 개발 플러그인 파일 감시기가 패널을 다시 읽음 |
+| **우측 사이드바 패널** | `panel/template.html` → 생성물 `panel.html` | 리뷰 화면 본체. 오버뷰(worktree·세션·PR)와 세션 리뷰(diff·드래그 멀티라인 코멘트·스레드·AI 실행)를 **패널 탭 안에서** 표시 |
+| 로컬 서버 | `server/main.mjs` | `127.0.0.1` 전용. git diff, 세션/코멘트 저장, AI 실행, `gh` 읽기. **데이터가 바뀔 때마다 `panel.html` 을 다시 생성** → Orca 개발 플러그인 파일 감시기가 패널을 다시 읽음 |
 | 브리지 터미널 | `worker/launcher-cli.mjs --bridge` | 패널 → 서버 입력 통로. 패널은 `terminal.sendText` 로 이 터미널에 명령 1줄(`SR <base64url JSON>`)을 입력하고, 브리지가 서버 API 로 전달 |
 | 워커 (커맨드) | `worker/main.mjs` | 커맨드 팔레트 `Self Review: …`. 서버 보장, 세션 준비, 브리지 터미널 자동 생성, 런처 설치 |
 | 넓은 화면 | `ui/` | 같은 데이터를 내장 브라우저 탭에서 넓게 보는 보조 화면 (PR 상세·큰 diff·실행 로그) |
 
 패널이 데이터를 받고 보내는 방식 (Orca plugin API v0 제약 — 패널은 `sandbox="allow-scripts"` iframe + CSP `connect-src 'none'`, 호스트 액션은 `workspace.readContext`·`terminal.sendText`·`notifications.show` 3개뿐):
 
-- **서버 → 패널**: 서버가 `panel/index.html` 에 `<script type="application/json" id="orca-panel-data">` 로 데이터를 넣어 재생성. Orca 는 개발 플러그인 폴더를 감시해(300ms 디바운스) 플러그인을 새로고침하고 패널을 다시 읽는다. 패치된 호스트(`orca-panel-data` 메시지 지원)에서는 iframe 을 유지한 채 데이터만 갱신된다.
+- **서버 → 패널**: 서버가 `panel.html` 에 `<script type="application/json" id="orca-panel-data">` 로 데이터를 넣어 재생성. Orca 는 개발 플러그인 폴더를 감시해(300ms 디바운스) 플러그인을 새로고침하고 패널을 다시 읽는다. 패치된 호스트(`orca-panel-data` 메시지 지원)에서는 iframe 을 유지한 채 데이터만 갱신된다.
 - **패널 → 서버**: `terminal.sendText` 로 브리지 터미널에 한 줄 입력. 4,096자 초과는 `SRC` 청크로 분할. 브리지는 입력 에코 없이(raw 모드) 서버에 전달하고 처리 상태만 표시한다.
 - 키바인딩은 선언하지 않는다. 키바인딩이 있으면 Orca 가 플러그인 폴더 내용 해시를 승인 지문에 포함해, 패널 재생성 때마다 승인이 풀린다.
 
@@ -57,7 +57,7 @@ PR을 올리기 **전에** 사람이 직접 하는 셀프 리뷰 도구. GitHub 
 ```sh
 node --test test/*.test.mjs   # 전 테스트 (git 외 외부 CLI 불필요 — gh/claude/codex/orca 는 모킹)
 node server/main.mjs --foreground   # 서버 단독 실행 (ORCA_SELF_REVIEW_HOME 으로 데이터 경로 변경 가능)
-node scripts/build-panel.mjs        # 데이터 없는 기준 panel/index.html 재생성 (서버가 런타임에 덮어씀)
+node scripts/build-panel.mjs        # 데이터 없는 기준 panel.html 재생성 (서버가 런타임에 덮어씀)
 # 패널 UI 를 브라우저에서 직접 보려면: http://127.0.0.1:47811/panel-preview (프리뷰 모드 — 브리지 대신 HTTP 로 동작)
 ```
 

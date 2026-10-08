@@ -47,7 +47,7 @@ const api = async (method, path, body) => {
   const response = await fetch(base + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) })
   return { status: response.status, body: await response.json().catch(() => null) }
 }
-const panelPath = join(pluginRoot, 'panel', 'index.html')
+const panelPath = join(pluginRoot, 'panel.html')
 const readPanelData = () => JSON.parse(/<script type="application\/json" id="orca-panel-data">([\s\S]*?)<\/script>/.exec(readFileSync(panelPath, 'utf8'))[1])
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -70,6 +70,7 @@ test('bridge register binds terminal ids to a worktree and shows up in panel dat
   await server.settlePanel()
   const data = readPanelData()
   assert.deepEqual(data.worktrees[0].bridgeTerminalIds.sort(), ['pty_bridge', 'term_bridge'])
+  assert.deepEqual(data.worktrees[0].terminalIds.sort(), ['pty_bridge', 'term_bridge'], 'live terminals of the worktree are listed for panel matching')
 })
 
 test('bridge unregister removes only the given terminal ids, keeping other live bridges', async () => {

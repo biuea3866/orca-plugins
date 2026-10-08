@@ -25,7 +25,7 @@ export class PanelPublisher {
   }
 
   templatePath() { return join(this.pluginRoot, 'panel', 'template.html') }
-  outputPath() { return join(this.outputRoot, 'panel', 'index.html') }
+  outputPath() { return join(this.outputRoot, 'panel.html') }
 
   readModules() {
     const modules = {}
@@ -68,7 +68,7 @@ export class PanelPublisher {
       html = buildPanelDocument({ template: readFileSync(this.templatePath(), 'utf8'), data: slim, modules: this.readModules() })
     }
     if (html === this.lastHtml) return false
-    mkdirSync(join(this.outputRoot, 'panel'), { recursive: true })
+    mkdirSync(this.outputRoot, { recursive: true })
     const tmpPath = `${this.outputPath()}.tmp`
     writeFileSync(tmpPath, html)
     renameSync(tmpPath, this.outputPath())

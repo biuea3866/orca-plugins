@@ -8,7 +8,7 @@
 
 | 사실 | 위치 | 활용 |
 |---|---|---|
-| 개발 플러그인 경로는 `DMo` 하우스키핑의 `devWatcher` 가 감시하며, 변경 시 300ms 디바운스 후 `refresh()` → `notifyChanged` → 렌더러가 `readPanelEntry` 로 패널 HTML 을 다시 읽는다 | `main/index.js` `DMo.sync`, `EMo.scheduleRefresh` | 서버가 `panel/index.html` 을 재생성하면 패널이 갱신된다 (서버 → 패널 채널) |
+| 개발 플러그인 경로는 `DMo` 하우스키핑의 `devWatcher` 가 감시하며, 변경 시 300ms 디바운스 후 `refresh()` → `notifyChanged` → 렌더러가 `readPanelEntry` 로 패널 HTML 을 다시 읽는다 | `main/index.js` `DMo.sync`, `EMo.scheduleRefresh` | 서버가 `panel.html` 을 재생성하면 패널이 갱신된다 (서버 → 패널 채널) |
 | 매니페스트에 keybindings/vmRecipes/agents 가 있으면(`YI`) 개발 플러그인 폴더의 내용 해시가 승인 지문에 포함된다 | `pgr`/`mgr` | 키바인딩을 제거해 파일 재생성이 승인을 풀지 않게 한다 |
 
 패널 → 서버 채널은 여전히 `terminal.sendText` 뿐이므로 **브리지 터미널**(`open-review --bridge`, raw 모드로 입력을 받아 `/api/bridge` 로 전달)을 둔다. 데이터 흐름·프로토콜은 아래 "패널 네이티브 설계" 절, 코드는 `server/lib/panel-publisher.mjs`·`server/lib/bridge-ops.mjs`·`panel/template.html`·`worker/launcher-cli.mjs`.
@@ -38,7 +38,7 @@
 | 워커 | `worker/main.mjs` | 커맨드 핸들러 3개(`open-review`·`open-overview`·`stop-server`). 서버 보장(`ensureServer`), 런처 설치, `orca tab create` | Orca storage(마지막 에이전트 선택 등 소형 KV) | `worker/launcher-lib.mjs` |
 | 서버 | `server/main.mjs` + `server/lib/*.mjs` | 127.0.0.1 HTTP. UI 정적 제공, REST API, git diff, 세션/코멘트 저장, AI 실행 관리, gh 읽기 | `~/Library/Application Support/OrcaLocalSelfReview/` 전체 | `git`·`gh`·`claude`·`codex`·`orca` CLI |
 | UI | `ui/index.html`·`ui/app.js`·`ui/styles.css` | SPA(프레임워크 없음, 빌드 없음). 오버뷰·세션·PR 상세 화면 | 브라우저 메모리(상태) | 서버 API |
-| 패널 | `panel/index.html` | 단일 HTML. 현재 worktree 표시, 터미널 선택 + 리뷰 열기, 안내 | — | 호스트 액션 3개 |
+| 패널 | `panel.html` | 단일 HTML. 현재 worktree 표시, 터미널 선택 + 리뷰 열기, 안내 | — | 호스트 액션 3개 |
 | 런처 | 데이터 디렉토리 `bin/open-review` (워커가 생성) | 서버 보장 + `orca tab create` 1회 | — | node, orca |
 
 의존 방향: 패널 → (터미널) → 런처 → 서버. 워커 → 서버. UI → 서버. 서버 → 외부 CLI. 역방향 없음.
@@ -184,7 +184,7 @@ interface DiffLine { type: 'context' | 'add' | 'del', oldNo: number | null, newN
 - 대형 diff: 파일은 클릭 시 렌더(지연), 20,000줄 초과 파일은 서버가 truncated → "크기 초과" 안내.
 - 선택 제약: 파일·side 경계 넘는 드래그는 경계에서 멈춤. 최대 200줄.
 
-## 패널 (panel/index.html)
+## 패널 (panel.html)
 
 - 로드 시 `workspace.readContext` → displayName·branch 표시, terminals[] 로 `<select>` 채움(id 끝 8자).
 - "리뷰 열기" → 선택 터미널에 `"$HOME/Library/Application Support/OrcaLocalSelfReview/bin/open-review"` + Enter 전송 → `notifications.show`.
@@ -254,7 +254,7 @@ split diff, 파일별 확인 완료, 세션 내보내기, Orca 에이전트 터�
 
 ```
 [서버] 변경 발생(세션·스레드·실행 상태) → PanelPublisher.schedule() (150ms 디바운스)
-     → panel/template.html + <script id="orca-panel-data"> JSON → panel/index.html (tmp+rename)
+     → panel/template.html + <script id="orca-panel-data"> JSON → panel.html (tmp+rename)
      → Orca devWatcher(300ms) → plugins refresh → 패널 iframe 재로드 (패치 호스트: orca-panel-data 메시지로 데이터만 교체)
 [패널] 조작 → op JSON → `SR <base64url>` 1줄 (3,800자 초과 시 `SRC <id> <i> <n> <data>` 청크)
      → terminal.sendText(브리지 터미널) → bridge CLI (raw 모드, 에코 없음) → POST /api/bridge → 서버 처리 → 재생성
@@ -274,6 +274,6 @@ split diff, 파일별 확인 완료, 세션 내보내기, Orca 에이전트 터�
 
 ### 검증 (2026-10-08)
 - `node --test test/*.test.mjs` 69건 통과 (패널 문서·브리지 op·브리지 통합 포함).
-- 실측: 브리지 터미널 생성 → `orca terminal send` 로 `SR …` 1줄 입력 → 서버 스레드 추가 → `panel/index.html` 재생성(reason=thread) 확인.
+- 실측: 브리지 터미널 생성 → `orca terminal send` 로 `SR …` 1줄 입력 → 서버 스레드 추가 → `panel.html` 재생성(reason=thread) 확인.
 - 실측: `/panel-preview` 를 내장 브라우저에서 열어 오버뷰 → 세션 열기 → 거터 선택 → 코멘트 등록 → 스레드 렌더 확인.
 - 미검증: 실제 Orca 사이드바 패널에서의 표시(스크린샷 권한 없음) — 사용자 확인 필요.

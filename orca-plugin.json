@@ -19,7 +19,7 @@
         "id": "self-review",
         "title": "Self Review",
         "icon": "git-pull-request",
-        "entry": "panel/index.html"
+        "entry": "panel.html"
       }
     ],
     "commands": [

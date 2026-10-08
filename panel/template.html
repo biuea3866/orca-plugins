@@ -203,8 +203,11 @@ function pickWorktree() {
     if (ACTIVE_WORKTREE) return
   }
   if (CONTEXT) {
-    match = worktrees.find((w) => w.displayName === CONTEXT.displayName && w.branch === CONTEXT.branch)
-      || worktrees.find((w) => w.branch === CONTEXT.branch)
+    const contextTerminals = new Set((CONTEXT.terminals || []).map((t) => t.id))
+    const shortBranch = String(CONTEXT.branch || '').replace(/^refs\/heads\//, '')
+    match = worktrees.find((w) => (w.terminalIds || []).some((id) => contextTerminals.has(id)))
+      || worktrees.find((w) => w.displayName === CONTEXT.displayName && w.branch === shortBranch)
+      || worktrees.find((w) => w.branch === shortBranch)
       || worktrees.find((w) => w.displayName === CONTEXT.displayName)
       || null
   }
