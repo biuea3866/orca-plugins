@@ -98,7 +98,7 @@
 /*__INLINE:threads__*/
 
 // ------------------------------------------------------------------ data
-const TEMPLATE_VERSION = 'v14'
+const TEMPLATE_VERSION = 'v15'
 let DATA = JSON.parse(document.getElementById('orca-panel-data').textContent || '{}')
 const PREVIEW = window.parent === window                       // opened in a normal browser (server /panel-preview)
 const PREVIEW_TOKEN = document.querySelector('meta[name="sr-token"]')?.content ?? null
@@ -141,10 +141,12 @@ window.addEventListener('message', (event) => {
     return
   }
   if (data.type === 'orca-panel-data' && data.data && data.data.schemaVersion === 1) {   // patched host: data without reload
+    // The host re-posts the same document whenever its theme/root attributes change; only real data counts.
+    if (data.data.generatedAt && data.data.generatedAt === DATA.generatedAt) return
     DATA = data.data
     UI.pendingThreads = []; UI.pendingReplies = {}
     pickWorktree()
-    render({ keepScroll: true })
+    scheduleRender({ keepScroll: true })
   }
 })
 
@@ -248,6 +250,19 @@ function restoreFocus(saved) {
   if (!el) return
   el.focus({ preventScroll: true })
   try { if (typeof saved.start === 'number' && el.setSelectionRange) el.setSelectionRange(saved.start, saved.end) } catch { /* ignore */ }
+}
+// A re-render while a <select> is open closes it under the user's cursor: defer until it settles.
+let deferredRender = null
+function scheduleRender(options) {
+  const active = document.activeElement
+  if (active instanceof HTMLSelectElement) {
+    deferredRender = options
+    const flush = () => { active.removeEventListener('blur', flush); active.removeEventListener('change', flush); if (deferredRender) { const pending = deferredRender; deferredRender = null; render(pending) } }
+    active.addEventListener('blur', flush, { once: true })
+    active.addEventListener('change', flush, { once: true })
+    return
+  }
+  render(options)
 }
 function render({ keepScroll = false } = {}) {
   const scrollY = window.scrollY
@@ -664,7 +679,7 @@ loadContext().then(() => {
 // a full re-render in the middle of a click swallows that click (the target node is replaced).
 window.addEventListener('focus', () => {
   const before = contextKey()
-  loadContext().then(() => { if (contextKey() !== before) render({ keepScroll: true }) })
+  loadContext().then(() => { if (contextKey() !== before) scheduleRender({ keepScroll: true }) })
 })
 </script>
 </body>
