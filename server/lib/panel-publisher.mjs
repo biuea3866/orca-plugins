@@ -67,7 +67,9 @@ export class PanelPublisher {
       if (Buffer.byteLength(JSON.stringify(slim)) > PANEL_DATA_MAX_BYTES) slim = { ...slim, sessions: {}, oversized: true }
       html = buildPanelDocument({ template: readFileSync(this.templatePath(), 'utf8'), data: slim, modules: this.readModules() })
     }
-    if (html === this.lastHtml) return false
+    // Compare with what is actually on disk: the file may have been replaced externally (e.g. the baseline build).
+    const onDisk = existsSync(this.outputPath()) ? readFileSync(this.outputPath(), 'utf8') : null
+    if (html === onDisk) { this.lastHtml = html; return false }
     mkdirSync(this.outputRoot, { recursive: true })
     const tmpPath = `${this.outputPath()}.tmp`
     writeFileSync(tmpPath, html)

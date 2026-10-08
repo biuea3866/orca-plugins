@@ -73,6 +73,13 @@ test('bridge register binds terminal ids to a worktree and shows up in panel dat
   assert.deepEqual(data.worktrees[0].terminalIds.sort(), ['pty_bridge', 'term_bridge'], 'live terminals of the worktree are listed for panel matching')
 })
 
+test('publish rewrites the panel when the file on disk was replaced externally', async () => {
+  writeFileSync(panelPath, '<!doctype html><html><body>baseline</body></html>')
+  await api('POST', '/api/panel/publish')
+  await server.settlePanel()
+  assert.ok(readFileSync(panelPath, 'utf8').includes('orca-panel-data'))
+})
+
 test('bridge unregister removes only the given terminal ids, keeping other live bridges', async () => {
   await api('POST', '/api/bridge/register', { worktreePath: repo, terminalHandle: 'term_second', panelTerminalId: null, ptyId: 'pty_second' })
   const removed = await api('POST', '/api/bridge/unregister', { worktreePath: repo, terminalHandle: 'term_second', ptyId: 'pty_second' })
