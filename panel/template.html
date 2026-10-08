@@ -57,6 +57,8 @@
   .thread { border: 1px solid var(--border); border-radius: var(--radius, 6px); background: var(--popover); color: var(--popover-foreground); margin: 4px 0; }
   .thread-head { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-bottom: 1px solid var(--border); font-size: 11px; color: var(--muted-foreground); flex-wrap: wrap; }
   .thread-head .grow { flex: 1; }
+  .thread.pending { opacity: .75; border-style: dashed; }
+  .comment.pending { opacity: .75; }
   .thread.resolved .thread-body { display: none; }
   .thread.resolved.expanded .thread-body { display: block; }
   .comment { padding: 6px 8px; border-bottom: 1px solid var(--border); }
@@ -96,14 +98,14 @@
 /*__INLINE:threads__*/
 
 // ------------------------------------------------------------------ data
-const TEMPLATE_VERSION = 'v11'
+const TEMPLATE_VERSION = 'v12'
 let DATA = JSON.parse(document.getElementById('orca-panel-data').textContent || '{}')
 const PREVIEW = window.parent === window                       // opened in a normal browser (server /panel-preview)
 const PREVIEW_TOKEN = document.querySelector('meta[name="sr-token"]')?.content ?? null
 let CONTEXT = null                                             // { displayName, branch, terminals: [{id}] }
 let ROUTE = 'review'                                            // 'review' | 'overview'
 let ACTIVE_WORKTREE = null                                      // worktree entry from DATA.worktrees
-const UI = { collapsedFiles: new Set(), filesCollapsed: true, file: null, selection: null, dragging: false, pendingForm: false, expanded: new Set(), draft: '', drafts: {}, scrollRestored: false, picker: null, lastMessage: '' }
+const UI = { pendingThreads: [], pendingReplies: {}, sending: false, collapsedFiles: new Set(), filesCollapsed: true, file: null, selection: null, dragging: false, pendingForm: false, expanded: new Set(), draft: '', drafts: {}, scrollRestored: false, picker: null, lastMessage: '' }
 
 function escapeHtml(value) { return String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char])) }
 class Raw { constructor(html) { this.html = html } }
@@ -140,6 +142,7 @@ window.addEventListener('message', (event) => {
   }
   if (data.type === 'orca-panel-data' && data.data && data.data.schemaVersion === 1) {   // patched host: data without reload
     DATA = data.data
+    UI.pendingThreads = []; UI.pendingReplies = {}
     pickWorktree()
     render({ keepScroll: true })
   }
@@ -194,7 +197,7 @@ async function previewReload() {
   const response = await fetch('/panel-preview', { headers: { 'X-SR-Token': PREVIEW_TOKEN } })
   const html = await response.text()
   const payload = /<script type="application\/json" id="orca-panel-data">([\s\S]*?)<\/script>/.exec(html)
-  if (payload) { DATA = JSON.parse(payload[1]); pickWorktree(); render({ keepScroll: true }) }
+  if (payload) { DATA = JSON.parse(payload[1]); UI.pendingThreads = []; UI.pendingReplies = {}; pickWorktree(); render({ keepScroll: true }) }
 }
 
 // ------------------------------------------------------------------ context + worktree selection
@@ -415,7 +418,7 @@ function fileDomId(path) { return 'file-' + String(path).replace(/[^a-zA-Z0-9_-]
 function fileBlockHtml(session, file) {
   const { session: s } = session
   const canComment = Boolean(PREVIEW || bridgeTerminalId())
-  const threads = s.threads.filter((t) => t.path === file.path)
+  const threads = [...s.threads.filter((t) => t.path === file.path), ...UI.pendingThreads.filter((t) => t.path === file.path)]
   const placement = placeThreads(threads)
   const collapsed = UI.collapsedFiles.has(file.path)
   const out = []
@@ -488,15 +491,23 @@ function refreshFile(path) {
 function threadHtml(thread) {
   const expanded = UI.expanded.has(thread.id)
   const range = thread.startLine === thread.endLine ? 'L' + thread.startLine : 'L' + thread.startLine + '–L' + thread.endLine
+  const pendingReplies = UI.pendingReplies[thread.id] || []
+  const busy = UI.sending ? 'disabled' : ''
+  if (thread.pending) {
+    return h`<div class="thread pending" data-thread="${thread.id}">
+      <div class="thread-head"><span class="badge warn">전송 중…</span><span class="mono">${thread.side} ${range}</span><span class="grow"></span><span class="muted small">브리지 → 서버, 곧 갱신됩니다</span></div>
+      <div class="thread-body">${raw(thread.comments.map((c) => h`<div class="comment"><div class="meta"><span>나</span><span>방금</span></div><div class="body">${c.body}</div></div>`).join(''))}</div></div>`
+  }
   return h`<div class="thread ${thread.status === 'resolved' ? 'resolved' : ''} ${expanded ? 'expanded' : ''}" data-thread="${thread.id}">
-    <div class="thread-head"><span class="badge">${thread.status === 'open' ? '열림' : '해결'}</span>${thread.applicability === 'outdated' ? raw('<span class="badge warn" title="현재 diff에서 원문을 찾지 못함">outdated</span>') : ''}<span class="mono">${thread.side} ${range}</span><span class="grow"></span>${thread.status === 'resolved' ? raw(h`<button type="button" class="btn ghost small" data-toggle="${thread.id}">${expanded ? '접기' : '펼치기'}</button>`) : ''}<button type="button" class="btn small" data-thread-status="${thread.status === 'open' ? 'resolved' : 'open'}" data-thread="${thread.id}">${thread.status === 'open' ? '해결' : '다시 열기'}</button><button type="button" class="btn small danger" data-thread-delete="${thread.id}">삭제</button></div>
-    <div class="thread-body">${raw(thread.comments.map((c) => h`<div class="comment" data-comment="${c.id}"><div class="meta"><span>나</span><span>${formatTime(c.createdAt)}</span><span class="grow"></span><button type="button" class="btn ghost small" data-comment-edit="${c.id}" data-thread="${thread.id}">수정</button><button type="button" class="btn ghost small" data-comment-delete="${c.id}" data-thread="${thread.id}">삭제</button></div><div class="body">${c.body}</div></div>`).join(''))}
-      <div class="form"><textarea rows="2" placeholder="답글…" data-reply-text="${thread.id}"></textarea><div class="actions"><button type="button" class="btn primary small" data-reply="${thread.id}">답글</button></div></div></div></div>`
+    <div class="thread-head"><span class="badge">${thread.status === 'open' ? '열림' : '해결'}</span>${thread.applicability === 'outdated' ? raw('<span class="badge warn" title="현재 diff에서 원문을 찾지 못함">outdated</span>') : ''}<span class="mono">${thread.side} ${range}</span><span class="grow"></span>${thread.status === 'resolved' ? raw(h`<button type="button" class="btn ghost small" data-toggle="${thread.id}">${expanded ? '접기' : '펼치기'}</button>`) : ''}<button type="button" class="btn small" ${raw(busy)} data-thread-status="${thread.status === 'open' ? 'resolved' : 'open'}" data-thread="${thread.id}">${thread.status === 'open' ? '해결' : '다시 열기'}</button><button type="button" class="btn small danger" ${raw(busy)} data-thread-delete="${thread.id}">삭제</button></div>
+    <div class="thread-body">${raw(thread.comments.map((c) => h`<div class="comment" data-comment="${c.id}"><div class="meta"><span>나</span><span>${formatTime(c.createdAt)}</span><span class="grow"></span><button type="button" class="btn ghost small" ${raw(busy)} data-comment-edit="${c.id}" data-thread="${thread.id}">수정</button><button type="button" class="btn ghost small" ${raw(busy)} data-comment-delete="${c.id}" data-thread="${thread.id}">삭제</button></div><div class="body">${c.body}</div></div>`).join(''))}
+      ${raw(pendingReplies.map((body) => h`<div class="comment pending"><div class="meta"><span>나</span><span class="badge warn">전송 중…</span></div><div class="body">${body}</div></div>`).join(''))}
+      <div class="form"><textarea rows="2" placeholder="답글…" data-reply-text="${thread.id}"></textarea><div class="actions"><button type="button" class="btn primary small" ${raw(busy)} data-reply="${thread.id}">답글</button></div></div></div></div>`
 }
 function formHtml() {
   const { startLine, endLine } = clampRange(UI.selection)
   const range = startLine === endLine ? 'L' + startLine : 'L' + startLine + '–L' + endLine + ' (' + (endLine - startLine + 1) + '줄)'
-  return h`<div class="thread"><div class="thread-head"><span class="mono">${UI.selection.side} ${range}</span><span class="grow"></span><span class="muted small">⌘/Ctrl+Enter 등록</span></div><div class="form"><textarea id="newComment" rows="3" placeholder="코멘트를 입력하세요">${UI.draft}</textarea><div class="actions"><button type="button" class="btn small" id="cancelComment">취소</button><button type="button" class="btn primary small" id="submitComment">코멘트 등록</button></div></div></div>`
+  return h`<div class="thread"><div class="thread-head"><span class="mono">${UI.selection.side} ${range}</span><span class="grow"></span><span class="muted small">⌘/Ctrl+Enter 등록</span></div><div class="form"><textarea id="newComment" rows="3" placeholder="코멘트를 입력하세요">${UI.draft}</textarea><div class="actions"><button type="button" class="btn small" id="cancelComment">취소</button><button type="button" class="btn primary small" id="submitComment" ${raw(UI.sending ? 'disabled' : '')}>${UI.sending ? '전송 중…' : '코멘트 등록'}</button></div></div></div>`
 }
 function selectedText(session, selection) {
   const file = session.diff.files.find((f) => f.path === selection.path)
@@ -515,17 +526,47 @@ function bindThreadHandlers(host, s) {
   host.querySelector('#newComment')?.addEventListener('keydown', (e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') submitNewComment(); if (e.key === 'Escape') { UI.selection = null; UI.pendingForm = false; UI.draft = ''; render({ keepScroll: true }) } })
   function submitNewComment() {
     const textarea = host.querySelector('#newComment')
-    if (!textarea || !textarea.value.trim()) return
+    if (!textarea || !textarea.value.trim() || UI.sending) return
     const { startLine, endLine } = clampRange(UI.selection)
-    const file = session.diff.files.find((f) => f.path === UI.selection.path)
-    const op = { op: 'thread.add', sessionId: s.id, revision: s.revision, path: UI.selection.path, oldPath: file?.oldPath ?? null, side: UI.selection.side, startLine, endLine, selectedText: selectedText(session, UI.selection), body: textarea.value }
-    UI.draft = textarea.value
-    act(() => send(op), () => { UI.selection = null; UI.pendingForm = false; UI.draft = '' })
+    const selection = UI.selection
+    const file = session.diff.files.find((f) => f.path === selection.path)
+    const body = textarea.value
+    const op = { op: 'thread.add', sessionId: s.id, revision: s.revision, path: selection.path, oldPath: file?.oldPath ?? null, side: selection.side, startLine, endLine, selectedText: selectedText(session, selection), body }
+    // Optimistic: show the comment in place right away and close the form; the regenerated panel replaces it.
+    const placeholder = { id: 'pending_' + Date.now(), pending: true, path: selection.path, side: selection.side, startLine, endLine, status: 'open', applicability: 'current', comments: [{ id: 'p', body }] }
+    UI.pendingThreads.push(placeholder)
+    UI.selection = null; UI.pendingForm = false; UI.draft = ''
+    UI.sending = true
+    refreshFile(selection.path)
+    send(op, { silent: true }).then(() => { UI.sending = false; refreshFile(selection.path) }).catch((error) => {
+      UI.sending = false
+      UI.pendingThreads = UI.pendingThreads.filter((t) => t !== placeholder)
+      UI.selection = selection; UI.pendingForm = true; UI.draft = body
+      refreshFile(selection.path)
+      notice(error.message, true)
+    })
   }
   for (const b of host.querySelectorAll('[data-toggle]')) b.addEventListener('click', () => { const id = b.dataset.toggle; if (UI.expanded.has(id)) UI.expanded.delete(id); else UI.expanded.add(id); render({ keepScroll: true }) })
   for (const b of host.querySelectorAll('[data-thread-status]')) b.addEventListener('click', () => act(() => send({ op: 'thread.patch', sessionId: s.id, revision: s.revision, threadId: b.dataset.thread, status: b.dataset.threadStatus })))
   for (const b of host.querySelectorAll('[data-thread-delete]')) b.addEventListener('click', () => { if (confirm('스레드를 삭제할까요?')) act(() => send({ op: 'thread.delete', sessionId: s.id, revision: s.revision, threadId: b.dataset.threadDelete })) })
-  for (const b of host.querySelectorAll('[data-reply]')) b.addEventListener('click', () => { const ta = host.querySelector(`[data-reply-text="${b.dataset.reply}"]`); if (!ta.value.trim()) return; UI.drafts[b.dataset.reply] = ta.value; act(() => send({ op: 'comment.add', sessionId: s.id, revision: s.revision, threadId: b.dataset.reply, body: ta.value }), () => { delete UI.drafts[b.dataset.reply] }) })
+  for (const b of host.querySelectorAll('[data-reply]')) b.addEventListener('click', () => {
+    const threadId = b.dataset.reply
+    const ta = host.querySelector(`[data-reply-text="${threadId}"]`)
+    if (!ta || !ta.value.trim() || UI.sending) return
+    const body = ta.value
+    const thread = s.threads.find((t) => t.id === threadId)
+    UI.pendingReplies[threadId] = [...(UI.pendingReplies[threadId] || []), body]
+    delete UI.drafts[threadId]
+    UI.sending = true
+    if (thread) refreshFile(thread.path)
+    send({ op: 'comment.add', sessionId: s.id, revision: s.revision, threadId, body }, { silent: true }).then(() => { UI.sending = false; if (thread) refreshFile(thread.path) }).catch((error) => {
+      UI.sending = false
+      UI.pendingReplies[threadId] = (UI.pendingReplies[threadId] || []).filter((x) => x !== body)
+      UI.drafts[threadId] = body
+      if (thread) refreshFile(thread.path)
+      notice(error.message, true)
+    })
+  })
   for (const b of host.querySelectorAll('[data-comment-delete]')) b.addEventListener('click', () => { if (confirm('코멘트를 삭제할까요?')) act(() => send({ op: 'comment.delete', sessionId: s.id, revision: s.revision, threadId: b.dataset.thread, commentId: b.dataset.commentDelete })) })
   for (const b of host.querySelectorAll('[data-comment-edit]')) b.addEventListener('click', () => {
     const commentEl = host.querySelector(`[data-comment="${b.dataset.commentEdit}"] .body`)
