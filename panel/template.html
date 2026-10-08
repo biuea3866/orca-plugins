@@ -96,7 +96,7 @@
 /*__INLINE:threads__*/
 
 // ------------------------------------------------------------------ data
-const TEMPLATE_VERSION = 'v10'
+const TEMPLATE_VERSION = 'v11'
 let DATA = JSON.parse(document.getElementById('orca-panel-data').textContent || '{}')
 const PREVIEW = window.parent === window                       // opened in a normal browser (server /panel-preview)
 const PREVIEW_TOKEN = document.querySelector('meta[name="sr-token"]')?.content ?? null
@@ -232,8 +232,23 @@ function activeSession() {
 
 // ------------------------------------------------------------------ rendering
 const app = document.getElementById('app')
+function captureFocus() {
+  const el = document.activeElement
+  if (!el || !(el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement || el instanceof HTMLSelectElement)) return null
+  const key = el.id ? '#' + el.id : el.dataset.replyText ? `[data-reply-text="${el.dataset.replyText}"]` : null
+  if (!key) return null
+  return { key, start: el.selectionStart, end: el.selectionEnd }
+}
+function restoreFocus(saved) {
+  if (!saved) return
+  const el = document.querySelector(saved.key)
+  if (!el) return
+  el.focus({ preventScroll: true })
+  try { if (typeof saved.start === 'number' && el.setSelectionRange) el.setSelectionRange(saved.start, saved.end) } catch { /* ignore */ }
+}
 function render({ keepScroll = false } = {}) {
   const scrollY = window.scrollY
+  const focus = captureFocus()
   saveDraft()
   renderTabs()
   const session = activeSession()
@@ -244,7 +259,17 @@ function render({ keepScroll = false } = {}) {
   document.getElementById('title').textContent = ACTIVE_WORKTREE ? `${ACTIVE_WORKTREE.repoDisplayName} · ${ACTIVE_WORKTREE.branch}` : 'Self Review'
   restoreDraft()
   if (keepScroll) window.scrollTo(0, scrollY)
-  else if (!UI.scrollRestored && viewState && ROUTE === 'review') { UI.scrollRestored = true; setTimeout(() => window.scrollTo(0, viewState.scroll || 0), 0) }
+  else if (!UI.scrollRestored && viewState && ROUTE === 'review') {
+    UI.scrollRestored = true
+    // After a regeneration the server tells us where the last comment went; land there instead of at the top.
+    setTimeout(() => {
+      const anchor = viewState.anchor
+      const row = anchor ? document.querySelector(`#${fileDomId(anchor.path)} .gutter[data-side="${anchor.side}"][data-line="${anchor.endLine}"]`) : null
+      if (row) row.scrollIntoView({ block: 'center' })
+      else window.scrollTo(0, viewState.scroll || 0)
+    }, 0)
+  }
+  restoreFocus(focus)
 }
 function renderTabs() {
   document.getElementById('tabs').innerHTML = h`<button type="button" class="tab ${ROUTE === 'review' ? 'active' : ''}" data-route="review">리뷰</button><button type="button" class="tab ${ROUTE === 'overview' ? 'active' : ''}" data-route="overview">전체 PR·세션</button>`
@@ -338,7 +363,6 @@ function renderReview(session) {
     refreshFile(UI.file)
     document.getElementById(fileDomId(UI.file))?.scrollIntoView({ block: 'start' })
     if (picked && picked.panelTruncated) act(() => send({ op: 'view', sessionId: s.id, route: ROUTE, file: UI.file, scroll: window.scrollY, loadFile: true }))
-    else sendView(s.id)
   })
   bindWorktreeSwitcher()
   bindBridgePicker()
@@ -450,11 +474,15 @@ function refreshFile(path) {
   const file = session?.diff.files.find((f) => f.path === path)
   const old = document.getElementById(fileDomId(path))
   if (!session || !file || !old) { if (session) renderFile(session); return }
+  const focus = captureFocus()
+  saveDraft()
   const wrapper = document.createElement('div')
   wrapper.innerHTML = fileBlockHtml(session, file)
   const fresh = wrapper.firstElementChild
   old.replaceWith(fresh)
   bindFileBlock(fresh, session)
+  restoreDraft()
+  restoreFocus(focus)
 }
 
 function threadHtml(thread) {
@@ -566,7 +594,7 @@ function sendView(sessionId) {
   clearTimeout(viewTimer)
   viewTimer = setTimeout(() => { send({ op: 'view', sessionId, route: ROUTE, file: UI.file, scroll: window.scrollY }, { silent: true }).catch(() => {}) }, 1200)
 }
-window.addEventListener('scroll', () => { const s = activeSession(); if (s && ROUTE === 'review') sendView(s.session.id) }, { passive: true })
+// Scroll position is intentionally NOT synced through the bridge: every terminal.sendText moves focus to the terminal.
 
 document.getElementById('btnRefreshOverview').addEventListener('click', () => act(() => send({ op: 'overview.refresh' })))
 document.getElementById('btnWide').addEventListener('click', () => { const s = activeSession(); if (s) act(() => send({ op: 'wide', sessionId: s.session.id })); else notice('세션을 먼저 시작하세요.', true) })

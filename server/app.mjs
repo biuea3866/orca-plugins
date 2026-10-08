@@ -348,10 +348,21 @@ export function createServer({
       case 'session.patch': { const result = store.updateSession(op.sessionId, op); publishPanel('session'); return result }
       case 'session.complete': { const session = store.getSession(op.sessionId); const result = store.updateSession(op.sessionId, { revision: session.revision, status: 'completed' }); publishPanel('session'); return result }
       case 'session.delete': { store.deleteSession(op.sessionId); delete viewState[op.sessionId]; publishPanel('session'); return { ok: true } }
-      case 'thread.add': { const result = store.addThread(op.sessionId, op); publishPanel('thread'); return result }
+      case 'thread.add': {
+        const result = store.addThread(op.sessionId, op)
+        viewState[op.sessionId] = { ...(viewState[op.sessionId] ?? { route: 'review', scroll: 0 }), file: op.path, anchor: { path: op.path, side: op.side, endLine: op.endLine } }
+        publishPanel('thread')
+        return result
+      }
       case 'thread.patch': { const result = store.updateThread(op.sessionId, op.threadId, op); publishPanel('thread'); return result }
       case 'thread.delete': { const result = store.deleteThread(op.sessionId, op.threadId, op); publishPanel('thread'); return result }
-      case 'comment.add': { const result = store.addComment(op.sessionId, op.threadId, op); publishPanel('thread'); return result }
+      case 'comment.add': {
+        const result = store.addComment(op.sessionId, op.threadId, op)
+        const thread = result.threads.find((entry) => entry.id === op.threadId)
+        if (thread) viewState[op.sessionId] = { ...(viewState[op.sessionId] ?? { route: 'review', scroll: 0 }), file: thread.path, anchor: { path: thread.path, side: thread.side, endLine: thread.endLine } }
+        publishPanel('thread')
+        return result
+      }
       case 'comment.patch': { const result = store.updateComment(op.sessionId, op.threadId, op.commentId, op); publishPanel('thread'); return result }
       case 'comment.delete': { const result = store.deleteComment(op.sessionId, op.threadId, op.commentId, op); publishPanel('thread'); return result }
       case 'run.start': { const run = await startRun(op.sessionId, op); ensureRunPolling(); publishPanel('run'); return run }
