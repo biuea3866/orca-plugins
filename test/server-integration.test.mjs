@@ -89,11 +89,12 @@ test('context + session + diff + threads + applicability', async () => {
   assert.equal(context.body.defaultBase, 'main')
   assert.equal(context.body.worktreeId, `r1::${repo}`)
 
-  const created = await api('POST', '/api/sessions', { kind: 'local', repoPath: repo, baseRef: 'main' })
+  const created = await api('POST', '/api/sessions', { kind: 'local', repoPath: repo, baseRef: 'main', includeWorkingTree: true, includeUntracked: true })
   assert.equal(created.status, 201)
   const sessionId = created.body.id
   const again = await api('POST', '/api/sessions', { kind: 'local', repoPath: repo, baseRef: 'main' })
   assert.equal(again.body.id, sessionId, 'idempotent')
+  assert.equal(again.body.includeWorkingTree, true, 'reuse keeps the existing session settings')
 
   const detail = await api('GET', `/api/sessions/${sessionId}`)
   assert.equal(detail.status, 200)

@@ -1,6 +1,6 @@
 import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, realpathSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, realpathSync, statSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
@@ -80,6 +80,17 @@ test('publish rewrites the panel when the file on disk was replaced externally',
   assert.ok(readFileSync(panelPath, 'utf8').includes('orca-panel-data'))
 })
 
+test('publish leaves the panel untouched when the file on disk already matches the generated document', async () => {
+  await server.settlePanel()
+  const before = { html: readFileSync(panelPath, 'utf8'), mtimeMs: statSync(panelPath).mtimeMs }
+  await wait(20)
+  const published = await api('POST', '/api/panel/publish')
+  assert.equal(published.status, 200)
+  await server.settlePanel()
+  assert.equal(readFileSync(panelPath, 'utf8'), before.html)
+  assert.equal(statSync(panelPath).mtimeMs, before.mtimeMs, 'an identical document is not rewritten to disk')
+})
+
 test('bridge unregister removes only the given terminal ids, keeping other live bridges', async () => {
   await api('POST', '/api/bridge/register', { worktreePath: repo, terminalHandle: 'term_second', panelTerminalId: null, ptyId: 'pty_second' })
   const removed = await api('POST', '/api/bridge/unregister', { worktreePath: repo, terminalHandle: 'term_second', ptyId: 'pty_second' })
@@ -89,7 +100,7 @@ test('bridge unregister removes only the given terminal ids, keeping other live 
 })
 
 test('bridge ops create a session, add a thread, keep view state without regenerating, and open the wide view', async () => {
-  const opened = await api('POST', '/api/bridge', { op: 'session.open', worktreePath: repo })
+  const opened = await api('POST', '/api/bridge', { op: 'session.open', worktreePath: repo, includeWorkingTree: true })
   assert.equal(opened.status, 200)
   const sessionId = opened.body.result.id
   await server.settlePanel()

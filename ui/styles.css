@@ -125,6 +125,7 @@ th { color: var(--muted); font-weight: 600; font-size: 12px; }
 .file-item .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-item .counts { white-space: nowrap; }
 .file-panel { border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 14px; overflow: hidden; }
+.file-panel.collapsed .file-head { border-bottom: 0; }
 .file-head { position: sticky; top: 49px; z-index: 5; display: flex; gap: 10px; align-items: center; padding: 8px 12px; background: var(--surface); border-bottom: 1px solid var(--border); font-family: var(--mono); font-size: 12px; }
 .diff { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12px; line-height: 20px; table-layout: fixed; }
 .diff td { padding: 0; border: 0; vertical-align: top; }

@@ -9,7 +9,7 @@ import { ApiError, SessionStore, summarizeSession, writeJsonAtomic } from './lib
 import { GitReader, readRepoFileLines } from './lib/git.mjs'
 import { OrcaReader } from './lib/orca.mjs'
 import { GitHubReader, parseGitHubRemote } from './lib/github.mjs'
-import { RunManager, defaultAgentCommands } from './lib/runs.mjs'
+import { RunManager, defaultAgentCommands, pickRunToShow, filterIgnoredChanges } from './lib/runs.mjs'
 import { annotateThreads } from './lib/anchor.mjs'
 import { buildPrompt, selectRunnableThreads } from './lib/prompt.mjs'
 import { parseUnifiedDiff } from './lib/diff-parser.mjs'
@@ -64,7 +64,8 @@ export function createServer({
   exitImpl = (code) => process.exit(code),
   panelDebounceMs = 150,
   panelRoot = pluginRoot,
-  bridgeMaintenanceMs = 60_000
+  bridgeMaintenanceMs = 60_000,
+  runProgressMs = 10_000
 }) {
   if (enrichEnvironment) enrichPath(process.env)
   mkdirSync(homeDir, { recursive: true, mode: 0o700 })
@@ -79,7 +80,8 @@ export function createServer({
     agentCommands: agentCommands ?? defaultAgentCommands((name) => resolveBin(name)),
     git,
     now,
-    onFinished: (run) => { try { store.setStatus(run.sessionId, 'rechecking') } catch { /* session gone */ } publishPanel('run-finished') }
+    onFinished: (run) => { try { store.setStatus(run.sessionId, 'rechecking') } catch { /* session gone */ } publishPanel('run-finished') },
+    ignoreChangedPaths: [join(panelRoot, 'panel.html')]
   })
   const startedAt = now()
   const bridgesPath = join(homeDir, 'runtime', 'bridges.json')
@@ -134,7 +136,7 @@ export function createServer({
       return { files: parseUnifiedDiff(text), baseSha: null, headSha: session.pr.headSha, mergeBaseSha: null, computedAt: now() }
     }
     if (!session.repoPath || !existsSync(session.repoPath)) throw new ApiError(404, 'worktree_missing', `worktree ${session.repoPath} no longer exists`)
-    return git.workingTreeDiff(session.repoPath, { baseRef: session.baseRef, includeUntracked: session.includeUntracked })
+    return git.workingTreeDiff(session.repoPath, { baseRef: session.baseRef, includeUntracked: session.includeUntracked, includeWorkingTree: session.includeWorkingTree })
   }
 
   async function sessionDetail(sessionId) {
@@ -179,7 +181,7 @@ export function createServer({
       const baseRef = typeof body.baseRef === 'string' && body.baseRef ? body.baseRef : context.defaultBase
       if (!baseRef) throw new ApiError(400, 'no_base', 'no base branch candidate found; pass baseRef explicitly')
       if (!(await git.refExists(context.repoPath, baseRef))) throw new ApiError(400, 'git_failed', `base ref ${baseRef} does not exist`)
-      return store.createSession({ kind: 'local', repoPath: context.repoPath, baseRef, includeUntracked: body.includeUntracked, agent: body.agent, worktreeId: context.worktreeId, repoDisplayName: context.repoDisplayName, branch: context.branch })
+      return store.createSession({ kind: 'local', repoPath: context.repoPath, baseRef, includeUntracked: body.includeUntracked, includeWorkingTree: body.includeWorkingTree, agent: body.agent, worktreeId: context.worktreeId, repoDisplayName: context.repoDisplayName, branch: context.branch })
     }
     if (body.kind === 'pr') {
       const { owner, repo, number } = body
@@ -239,12 +241,16 @@ export function createServer({
   function runSignature() {
     return runs.list().map((run) => `${run.id}:${run.status}`).join(',')
   }
+  let lastProgressPublish = 0
   function ensureRunPolling() {
     if (runPollTimer) return
     lastRunSignature = runSignature()
+    lastProgressPublish = Date.now()
     runPollTimer = setInterval(() => {
       const signature = runSignature()
-      if (signature !== lastRunSignature) { lastRunSignature = signature; publishPanel('run-progress') }
+      const statusChanged = signature !== lastRunSignature
+      const progressDue = runProgressMs > 0 && Date.now() - lastProgressPublish >= runProgressMs && runs.hasRunning()
+      if (statusChanged || progressDue) { lastRunSignature = signature; lastProgressPublish = Date.now(); publishPanel('run-progress') }
       if (!runs.hasRunning()) { clearInterval(runPollTimer); runPollTimer = null }
     }, 2000)
     runPollTimer.unref?.()
@@ -280,17 +286,30 @@ export function createServer({
       if (summary.status === 'completed') continue
       try {
         const detail = await sessionDetail(summary.id)
-        sessions[summary.id] = { session: detail.session, diff: { ...detail.diff, files: trimFilesForPanel(detail.diff.files) } }
+        let baseCandidates = []
+        if (detail.session.kind === 'local' && detail.session.repoPath) { try { baseCandidates = await git.baseCandidates(detail.session.repoPath) } catch { baseCandidates = [] } }
+        sessions[summary.id] = { session: detail.session, diff: { ...detail.diff, files: trimFilesForPanel(detail.diff.files) }, baseCandidates }
       } catch (error) {
-        sessions[summary.id] = { session: store.getSession(summary.id), diff: { files: [], error: error.message } }
+        let baseCandidates = []
+        const session = store.getSession(summary.id)
+        if (session.kind === 'local' && session.repoPath) { try { baseCandidates = await git.baseCandidates(session.repoPath) } catch { baseCandidates = [] } }
+        sessions[summary.id] = { session, diff: { files: [], error: error.message }, baseCandidates }
       }
     }
     const runList = runs.list()
     const runsBySession = {}
-    for (const run of runList) {
-      if (runsBySession[run.sessionId]) continue
+    const bySession = new Map()
+    for (const run of runList) { if (!bySession.has(run.sessionId)) bySession.set(run.sessionId, []); bySession.get(run.sessionId).push(run) }
+    for (const [sessionId, sessionRuns] of bySession) {
+      const cleaned = sessionRuns.map((entry) => ({ ...entry, changedFiles: filterIgnoredChanges(entry.changedFiles || [], entry.cwd || '/', [join(panelRoot, 'panel.html')]) }))
+      const run = pickRunToShow(cleaned)
+      if (!run) continue
       const { log } = runs.readLog(run.id, 0)
-      runsBySession[run.sessionId] = { ...run, fingerprintsBefore: undefined, logTail: log.slice(-PANEL_LOG_TAIL_BYTES) }
+      let aiChanges = null
+      if (run.status !== 'running' && run.status !== 'queued' && run.changedFiles.length && run.cwd && existsSync(run.cwd)) {
+        try { aiChanges = trimFilesForPanel(await git.workingTreeChangesFor(run.cwd, run.changedFiles)) } catch (error) { aiChanges = { error: error.message } }
+      }
+      runsBySession[run.sessionId] = { ...run, fingerprintsBefore: undefined, logTail: log.slice(-PANEL_LOG_TAIL_BYTES), aiChanges }
     }
     if (reason !== 'run-progress' || !lastOverview) {
       try { lastOverview = await overview() } catch (error) { lastOverview = { repos: [], sessions: sessionList, github: { enabled: false, lastFetchedAt: null, errors: [{ repo: '(orca)', message: error.message }] } } }
@@ -334,7 +353,7 @@ export function createServer({
         return { ok: true }
       }
       case 'session.open': {
-        const session = await createSession({ kind: 'local', repoPath: op.worktreePath, baseRef: op.baseRef, agent: op.agent })
+        const session = await createSession({ kind: 'local', repoPath: op.worktreePath, baseRef: op.baseRef, agent: op.agent, includeWorkingTree: op.includeWorkingTree, includeUntracked: op.includeUntracked })
         viewState[session.id] = viewState[session.id] ?? { route: 'review', file: null, scroll: 0 }
         publishPanel('session')
         if (bridgeMaintenanceMs) maintainBridges({ worktreePath: session.repoPath }).catch(() => {})
@@ -343,10 +362,21 @@ export function createServer({
       case 'session.patch': { const result = store.updateSession(op.sessionId, op); publishPanel('session'); return result }
       case 'session.complete': { const session = store.getSession(op.sessionId); const result = store.updateSession(op.sessionId, { revision: session.revision, status: 'completed' }); publishPanel('session'); return result }
       case 'session.delete': { store.deleteSession(op.sessionId); delete viewState[op.sessionId]; publishPanel('session'); return { ok: true } }
-      case 'thread.add': { const result = store.addThread(op.sessionId, op); publishPanel('thread'); return result }
+      case 'thread.add': {
+        const result = store.addThread(op.sessionId, op)
+        viewState[op.sessionId] = { ...(viewState[op.sessionId] ?? { route: 'review', scroll: 0 }), file: op.path, anchor: { path: op.path, side: op.side, endLine: op.endLine } }
+        publishPanel('thread')
+        return result
+      }
       case 'thread.patch': { const result = store.updateThread(op.sessionId, op.threadId, op); publishPanel('thread'); return result }
       case 'thread.delete': { const result = store.deleteThread(op.sessionId, op.threadId, op); publishPanel('thread'); return result }
-      case 'comment.add': { const result = store.addComment(op.sessionId, op.threadId, op); publishPanel('thread'); return result }
+      case 'comment.add': {
+        const result = store.addComment(op.sessionId, op.threadId, op)
+        const thread = result.threads.find((entry) => entry.id === op.threadId)
+        if (thread) viewState[op.sessionId] = { ...(viewState[op.sessionId] ?? { route: 'review', scroll: 0 }), file: thread.path, anchor: { path: thread.path, side: thread.side, endLine: thread.endLine } }
+        publishPanel('thread')
+        return result
+      }
       case 'comment.patch': { const result = store.updateComment(op.sessionId, op.threadId, op.commentId, op); publishPanel('thread'); return result }
       case 'comment.delete': { const result = store.deleteComment(op.sessionId, op.threadId, op.commentId, op); publishPanel('thread'); return result }
       case 'run.start': { const run = await startRun(op.sessionId, op); ensureRunPolling(); publishPanel('run'); return run }

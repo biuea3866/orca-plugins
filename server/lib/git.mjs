@@ -64,20 +64,50 @@ export class GitReader {
     return result.stdout.split('\0').filter(Boolean)
   }
 
-  async workingTreeDiff(cwd, { baseRef, includeUntracked }) {
-    const mergeBaseSha = await this.mergeBase(cwd, baseRef)
+  /**
+   * PR-like by default: committed changes between the merge-base and HEAD. With
+   * includeWorkingTree the uncommitted working tree is compared instead, and
+   * includeUntracked adds untracked (never ignored) files on top of that.
+   */
+  async workingTreeDiff(cwd, { baseRef, includeUntracked = false, includeWorkingTree = false }) {
     const headSha = await this.headSha(cwd)
     const baseSha = (await this.run(cwd, ['rev-parse', baseRef])).stdout.trim()
-    const diff = await this.run(cwd, ['diff', '--no-color', '--no-ext-diff', '--find-renames', mergeBaseSha, '--'])
+    // No common ancestor (orphan/squashed snapshot branches): compare the working tree against the base itself.
+    let mergeBaseSha = null
+    let noMergeBase = false
+    try { mergeBaseSha = await this.mergeBase(cwd, baseRef) } catch (error) { if (!(error instanceof ApiError)) throw error; noMergeBase = true }
+    const diffArgs = ['diff', '--no-color', '--no-ext-diff', '--find-renames', mergeBaseSha ?? baseSha]
+    if (!includeWorkingTree) diffArgs.push('HEAD')
+    const diff = await this.run(cwd, [...diffArgs, '--'])
     const files = parseUnifiedDiff(diff.stdout)
-    if (includeUntracked) {
+    if (includeWorkingTree && includeUntracked) {
       for (const file of await this.untrackedFiles(cwd)) {
         const untracked = await this.run(cwd, ['diff', '--no-color', '--no-ext-diff', '--no-index', '--', '/dev/null', file], { allowFailure: true })
         if (untracked.code > 1) continue
         files.push(...parseUnifiedDiff(untracked.stdout, { changeType: 'untracked' }).map((entry) => ({ ...entry, path: file })))
       }
     }
-    return { files, baseSha, headSha, mergeBaseSha, computedAt: new Date().toISOString() }
+    return { files, baseSha, headSha, mergeBaseSha, noMergeBase, includeWorkingTree, includeUntracked, computedAt: new Date().toISOString() }
+  }
+
+  /** What an AI run changed: HEAD vs working tree for the given paths (new files via --no-index). */
+  async workingTreeChangesFor(cwd, paths) {
+    if (!paths || paths.length === 0) return []
+    const tracked = []
+    const files = []
+    for (const path of paths) {
+      const known = await this.run(cwd, ['ls-files', '--error-unmatch', '--', path], { allowFailure: true })
+      if (known.code === 0) tracked.push(path)
+      else {
+        const created = await this.run(cwd, ['diff', '--no-color', '--no-ext-diff', '--no-index', '--', '/dev/null', path], { allowFailure: true })
+        if (created.code <= 1) files.push(...parseUnifiedDiff(created.stdout, { changeType: 'untracked' }).map((entry) => ({ ...entry, path })))
+      }
+    }
+    if (tracked.length) {
+      const diff = await this.run(cwd, ['diff', '--no-color', '--no-ext-diff', '--find-renames', 'HEAD', '--', ...tracked])
+      files.push(...parseUnifiedDiff(diff.stdout))
+    }
+    return files
   }
 
   async porcelainStatus(cwd) {

@@ -207,7 +207,7 @@ function createDiffViewer({ files, threads, canComment, onCreateThread, onThread
   fileList.className = 'card file-list'
   const filePanelHost = document.createElement('div')
   root.append(fileList, filePanelHost)
-  const state = { activePath: files[0]?.path ?? null, selection: null, dragging: false, pendingForm: null, expandedResolved: new Set() }
+  const state = { activePath: files[0]?.path ?? null, selection: null, dragging: false, pendingForm: null, expandedResolved: new Set(), collapsed: new Set() }
   let currentThreads = threads
 
   function drawFileList() {
@@ -219,7 +219,7 @@ function createDiffViewer({ files, threads, canComment, onCreateThread, onThread
       const item = document.createElement('div')
       item.className = `file-item${file.path === state.activePath ? ' active' : ''}`
       item.innerHTML = h`<span class="badge small">${{ added: 'A', modified: 'M', deleted: 'D', renamed: 'R', untracked: 'U' }[file.changeType] ?? '?'}</span><span class="name" title="${file.path}">${file.path}</span><span class="counts small"><span class="add-count">+${file.additions}</span> <span class="del-count">−${file.deletions}</span>${counts[file.path] ? raw(` <span class="badge">💬${counts[file.path]}</span>`) : ''}</span>`
-      item.addEventListener('click', () => { state.activePath = file.path; state.selection = null; state.pendingForm = null; drawFileList(); drawFile() })
+      item.addEventListener('click', () => { state.activePath = file.path; state.collapsed.delete(file.path); redrawFile(file.path); drawFileList(); document.getElementById(fileDomId(file.path))?.scrollIntoView({ block: 'start' }) })
       body.append(item)
     }
   }
@@ -331,59 +331,78 @@ function createDiffViewer({ files, threads, canComment, onCreateThread, onThread
     return row
   }
 
-  function drawFile() {
-    filePanelHost.innerHTML = ''
-    const file = files.find((entry) => entry.path === state.activePath)
-    if (!file) { filePanelHost.innerHTML = '<div class="card"><div class="notice-box">파일을 선택하세요.</div></div>'; return }
+  function fileDomId(path) { return 'file-' + String(path).replace(/[^a-zA-Z0-9_-]/g, (c) => '_' + c.charCodeAt(0).toString(16)) }
+
+  function buildFilePanel(file) {
     const panel = document.createElement('div')
-    panel.className = 'file-panel'
+    panel.className = `file-panel${state.collapsed.has(file.path) ? ' collapsed' : ''}`
+    panel.id = fileDomId(file.path)
+    panel.dataset.filePanel = file.path
     const head = document.createElement('div')
     head.className = 'file-head'
-    head.innerHTML = h`<strong>${file.path}</strong>${file.oldPath ? raw(h`<span class="muted">← ${file.oldPath}</span>`) : ''}<span class="badge">${file.changeType}</span><span class="small"><span class="add-count">+${file.additions}</span> <span class="del-count">−${file.deletions}</span></span>`
+    const collapsed = state.collapsed.has(file.path)
+    const threadCount = currentThreads.filter((thread) => thread.path === file.path).length
+    head.innerHTML = h`<button type="button" class="btn ghost small" data-toggle-file title="${collapsed ? '펼치기' : '접기'}">${collapsed ? '▸' : '▾'}</button><strong>${file.path}</strong>${file.oldPath ? raw(h`<span class="muted">← ${file.oldPath}</span>`) : ''}<span class="badge">${file.changeType}</span><span class="small"><span class="add-count">+${file.additions}</span> <span class="del-count">−${file.deletions}</span>${threadCount ? raw(` <span class="badge">💬${threadCount}</span>`) : ''}</span>`
+    head.querySelector('[data-toggle-file]').addEventListener('click', () => { if (state.collapsed.has(file.path)) state.collapsed.delete(file.path); else state.collapsed.add(file.path); redrawFile(file.path) })
     panel.append(head)
+    if (collapsed) return panel
     if (file.binary || file.truncated || file.hunks.length === 0) {
       const box = document.createElement('div')
       box.className = 'notice-box'
       box.textContent = file.binary ? '바이너리 파일 — 텍스트 라인 코멘트를 지원하지 않습니다.' : file.truncated ? 'diff가 20,000줄을 초과해 표시하지 않습니다.' : '표시할 hunk가 없습니다.'
       panel.append(box)
-    } else {
-      const table = document.createElement('table')
-      table.className = 'diff'
-      table.innerHTML = '<colgroup><col class="col-gutter"><col class="col-gutter"><col class="col-marker"><col></colgroup>'
-      const placement = placeThreads(currentThreads.filter((thread) => thread.path === file.path))
-      const tbody = document.createElement('tbody')
-      for (const hunk of file.hunks) {
-        const hunkRow = document.createElement('tr')
-        hunkRow.className = 'hunk'
-        const cell = document.createElement('td')
-        cell.colSpan = 4
-        cell.textContent = hunk.header
-        hunkRow.append(cell)
-        tbody.append(hunkRow)
-        for (const line of hunk.lines) {
-          tbody.append(lineRow(file, line))
-          for (const side of ['old', 'new']) {
-            const number = side === 'old' ? line.oldNo : line.newNo
-            if (number === null) continue
-            const here = placement[threadKey(file.path, side, number)]
-            if (here) tbody.append(threadRow(here, 4))
-            if (state.pendingForm && state.selection && state.selection.path === file.path && state.selection.side === side && clampRange(state.selection).endLine === number) tbody.append(commentFormRow(4))
-          }
+      return panel
+    }
+    const table = document.createElement('table')
+    table.className = 'diff'
+    table.innerHTML = '<colgroup><col class="col-gutter"><col class="col-gutter"><col class="col-marker"><col></colgroup>'
+    const placement = placeThreads(currentThreads.filter((thread) => thread.path === file.path))
+    const tbody = document.createElement('tbody')
+    for (const hunk of file.hunks) {
+      const hunkRow = document.createElement('tr')
+      hunkRow.className = 'hunk'
+      const cell = document.createElement('td')
+      cell.colSpan = 4
+      cell.textContent = hunk.header
+      hunkRow.append(cell)
+      tbody.append(hunkRow)
+      for (const line of hunk.lines) {
+        tbody.append(lineRow(file, line))
+        for (const side of ['old', 'new']) {
+          const number = side === 'old' ? line.oldNo : line.newNo
+          if (number === null) continue
+          const here = placement[threadKey(file.path, side, number)]
+          if (here) tbody.append(threadRow(here, 4))
+          if (state.pendingForm && state.selection && state.selection.path === file.path && state.selection.side === side && clampRange(state.selection).endLine === number) tbody.append(commentFormRow(4))
         }
       }
-      table.append(tbody)
-      panel.append(table)
-      // threads whose lines are no longer in the diff (outdated) still need a home: list them at the bottom
-      const orphaned = currentThreads.filter((thread) => thread.path === file.path && !hasLine(file, thread.side, thread.endLine))
-      if (orphaned.length) {
-        const box = document.createElement('div')
-        box.className = 'notice-box'
-        box.innerHTML = '<strong>현재 diff에 위치를 찾지 못한 스레드</strong>'
-        for (const thread of orphaned) box.append(threadElement(thread))
-        panel.append(box)
-      }
     }
-    filePanelHost.append(panel)
+    table.append(tbody)
+    panel.append(table)
+    const orphaned = currentThreads.filter((thread) => thread.path === file.path && !hasLine(file, thread.side, thread.endLine))
+    if (orphaned.length) {
+      const box = document.createElement('div')
+      box.className = 'notice-box'
+      box.innerHTML = '<strong>현재 diff에 위치를 찾지 못한 스레드</strong>'
+      for (const thread of orphaned) box.append(threadElement(thread))
+      panel.append(box)
+    }
+    return panel
+  }
+
+  /** GitHub "Files changed" layout: every file in sequence. */
+  function drawFile() {
+    filePanelHost.innerHTML = ''
+    if (files.length === 0) { filePanelHost.innerHTML = '<div class="card"><div class="notice-box">변경 사항이 없습니다.</div></div>'; return }
+    for (const file of files) filePanelHost.append(buildFilePanel(file))
+  }
+
+  /** Redraws one file panel only (drag selection, collapse toggles). */
+  function redrawFile(path) {
+    const file = files.find((entry) => entry.path === path)
+    const old = filePanelHost.querySelector(`[data-file-panel="${CSS.escape(path)}"]`)
+    if (!file || !old) { drawFile(); return }
+    old.replaceWith(buildFilePanel(file))
   }
 
   function hasLine(file, side, number) {
@@ -401,29 +420,31 @@ function createDiffViewer({ files, threads, canComment, onCreateThread, onThread
     if (!cell || event.button !== 0) return
     event.preventDefault()
     state.pendingForm = null
+    const previousPath = state.selection?.path
     state.selection = event.shiftKey && state.selection ? extendSelection(state.selection, cell) : beginSelection(cell)
     state.dragging = true
-    drawFile()
+    if (previousPath && previousPath !== state.selection.path) redrawFile(previousPath)
+    redrawFile(state.selection.path)
   })
   filePanelHost.addEventListener('mouseover', (event) => {
     if (!state.dragging) return
     const cell = cellFromEvent(event)
     if (!cell) return
     const next = extendSelection(state.selection, cell)
-    if (next !== state.selection) { state.selection = next; drawFile() }
+    if (next !== state.selection) { state.selection = next; redrawFile(state.selection.path) }
   })
-  const finishDrag = () => { if (!state.dragging) return; state.dragging = false; if (state.selection) { state.pendingForm = true; drawFile() } }
+  const finishDrag = () => { if (!state.dragging) return; state.dragging = false; if (state.selection) { state.pendingForm = true; redrawFile(state.selection.path) } }
   window.addEventListener('mouseup', finishDrag)
   filePanelHost.addEventListener('keydown', (event) => {
     const cell = cellFromEvent(event)
     if (!cell) return
-    if (event.key === 'Enter') { event.preventDefault(); state.selection = beginSelection(cell); state.pendingForm = true; drawFile() }
+    if (event.key === 'Enter') { event.preventDefault(); state.selection = beginSelection(cell); state.pendingForm = true; redrawFile(state.selection.path) }
     if (event.shiftKey && (event.key === 'ArrowDown' || event.key === 'ArrowUp') && state.selection) {
       event.preventDefault()
       const delta = event.key === 'ArrowDown' ? 1 : -1
       state.selection = extendSelection(state.selection, { ...cell, line: state.selection.head + delta })
       state.pendingForm = true
-      drawFile()
+      redrawFile(state.selection.path)
       filePanelHost.querySelector(`.gutter[data-side="${state.selection.side}"][data-line="${state.selection.head}"]`)?.focus()
     }
   })
@@ -524,7 +545,8 @@ async function renderSession(sessionId) {
       </div>
       <span class="badge">${session.status}</span>
       ${session.kind === 'local' ? raw(h`<label>base <select id="baseRef">${raw((context?.baseCandidates ?? [session.baseRef]).map((candidate) => h`<option value="${candidate}" ${raw(candidate === session.baseRef ? 'selected' : '')}>${candidate}</option>`).join(''))}</select></label>
-      <label><input type="checkbox" id="untracked" ${raw(session.includeUntracked ? 'checked' : '')}> untracked 포함</label>`) : ''}
+      <label><input type="checkbox" id="workingTree" ${raw(session.includeWorkingTree ? 'checked' : '')}> 미커밋 변경 포함</label>
+      ${session.includeWorkingTree ? raw(h`<label><input type="checkbox" id="untracked" ${raw(session.includeUntracked ? 'checked' : '')}> untracked 포함</label>`) : ''}`) : ''}
       <span class="spacer"></span>
       <label>에이전트 <select id="agent">${raw(agentOptions)}</select></label>
       <button type="button" class="btn" id="refreshDiff" title="diff 다시 계산">diff 새로고침</button>
@@ -533,6 +555,7 @@ async function renderSession(sessionId) {
       <span class="muted small">거터 드래그/Shift+클릭으로 멀티라인 선택 · <span class="kbd">Enter</span> 1줄 · <span class="kbd">Shift+↑↓</span> 확장</span>`
     headEl.querySelector('#baseRef')?.addEventListener('change', async (event) => { await mutate(() => api.patch(`/api/sessions/${session.id}`, { revision: session.revision, baseRef: event.target.value })); await reload() })
     headEl.querySelector('#untracked')?.addEventListener('change', async (event) => { await mutate(() => api.patch(`/api/sessions/${session.id}`, { revision: session.revision, includeUntracked: event.target.checked })); await reload() })
+    headEl.querySelector('#workingTree')?.addEventListener('change', async (event) => { await mutate(() => api.patch(`/api/sessions/${session.id}`, { revision: session.revision, includeWorkingTree: event.target.checked })); await reload() })
     headEl.querySelector('#agent').addEventListener('change', (event) => mutate(() => api.patch(`/api/sessions/${session.id}`, { revision: session.revision, agent: event.target.value })))
     headEl.querySelector('#refreshDiff').addEventListener('click', () => reload())
     headEl.querySelector('#complete')?.addEventListener('click', async () => {

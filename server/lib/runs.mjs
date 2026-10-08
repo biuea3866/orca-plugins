@@ -4,7 +4,7 @@
 import { spawn } from 'node:child_process'
 import { createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, statSync, openSync, readSync, closeSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { ApiError, makeId, writeJsonAtomic } from './store.mjs'
 
 export const LOG_CAP_BYTES = 10 * 1024 * 1024
@@ -45,8 +45,24 @@ function pidAlive(pid) {
   try { process.kill(pid, 0); return true } catch { return false }
 }
 
+/** Removes changed paths that are files the server writes itself (e.g. the generated panel document). */
+export function filterIgnoredChanges(changedFiles, cwd, ignoreAbsolutePaths = []) {
+  const ignored = new Set(ignoreAbsolutePaths.map((path) => resolve(path)))
+  return changedFiles.filter((relativePath) => !ignored.has(resolve(cwd, relativePath)))
+}
+
+/** The run worth showing: a live one, else the newest that changed files, else the newest. */
+export function pickRunToShow(runs) {
+  if (!runs.length) return null
+  const sorted = [...runs].sort((left, right) => String(right.startedAt).localeCompare(String(left.startedAt)))
+  return sorted.find((run) => run.status === 'running' || run.status === 'queued')
+    ?? sorted.find((run) => (run.changedFiles || []).length > 0)
+    ?? sorted[0]
+}
+
 export class RunManager {
-  constructor({ homeDir, agentCommands, git, now = () => new Date().toISOString(), onFinished = () => {} }) {
+  constructor({ homeDir, agentCommands, git, now = () => new Date().toISOString(), onFinished = () => {}, ignoreChangedPaths = [] }) {
+    this.ignoreChangedPaths = ignoreChangedPaths
     this.runsDir = join(homeDir, 'runs')
     this.agentCommands = agentCommands
     this.git = git
@@ -190,7 +206,7 @@ export class RunManager {
       const dirtyAfter = await this.git.porcelainStatus(run.cwd)
       const after = fingerprintPaths(run.cwd, [...new Set([...dirtyAfter, ...Object.keys(before)])])
       const changed = Object.keys(after).filter((path) => before[path] !== after[path])
-      return changed.sort()
+      return filterIgnoredChanges(changed, run.cwd, this.ignoreChangedPaths).sort()
     } catch {
       return []
     }

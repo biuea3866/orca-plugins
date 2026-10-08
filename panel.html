@@ -57,6 +57,8 @@
   .thread { border: 1px solid var(--border); border-radius: var(--radius, 6px); background: var(--popover); color: var(--popover-foreground); margin: 4px 0; }
   .thread-head { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-bottom: 1px solid var(--border); font-size: 11px; color: var(--muted-foreground); flex-wrap: wrap; }
   .thread-head .grow { flex: 1; }
+  .thread.pending { opacity: .75; border-style: dashed; }
+  .comment.pending { opacity: .75; }
   .thread.resolved .thread-body { display: none; }
   .thread.resolved.expanded .thread-body { display: block; }
   .comment { padding: 6px 8px; border-bottom: 1px solid var(--border); }
@@ -66,9 +68,14 @@
   .comment .body { white-space: pre-wrap; word-break: break-word; margin-top: 2px; }
   .form { padding: 6px 8px; }
   .form .actions { display: flex; gap: 6px; justify-content: flex-end; margin-top: 4px; }
-  .file-head { position: sticky; top: 34px; z-index: 5; padding: 4px 8px; background: var(--card); border-bottom: 1px solid var(--border); display: flex; gap: 6px; align-items: center; }
+  .file-block { margin: 0 8px 10px; border: 1px solid var(--border); border-radius: var(--radius, 6px); overflow: hidden; background: var(--background); }
+  .file-block.collapsed .file-head { border-bottom: 0; }
+  .file-head { position: sticky; top: 34px; z-index: 5; padding: 4px 6px; background: var(--card); border-bottom: 1px solid var(--border); display: flex; gap: 6px; align-items: center; }
   .file-head .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
   .run { margin: 8px; border: 1px solid var(--border); border-radius: var(--radius, 6px); background: var(--card); }
+  .run.live { border-color: var(--primary); }
+  .spinner { display: inline-block; width: 10px; height: 10px; border: 2px solid var(--border); border-top-color: var(--primary); border-radius: 50%; animation: sr-spin .8s linear infinite; margin-right: 4px; }
+  @keyframes sr-spin { to { transform: rotate(360deg); } }
   .run pre { margin: 0; max-height: 160px; overflow: auto; padding: 6px 8px; font-size: 11px; white-space: pre-wrap; word-break: break-word; background: var(--background); }
   details summary { cursor: pointer; color: var(--muted-foreground); }
   .add-count { color: #2ea043; } .del-count { color: #f85149; }
@@ -85,6 +92,7 @@
 </div>
 <div class="tabs" id="tabs"></div>
 <div id="notice" class="notice" hidden></div>
+<div id="focusBanner" class="notice" hidden></div>
 <div id="app"><div class="empty">로딩 중…</div></div>
 
 <script type="application/json" id="orca-panel-data">{"schemaVersion":1,"generatedAt":null,"reason":"baseline","server":null,"launcher":null,"agents":{},"worktrees":[],"sessions":{},"sessionList":[],"runs":{},"overview":{"repos":[],"github":{"enabled":false,"lastFetchedAt":null,"errors":[]}},"viewState":{}}</script>
@@ -149,14 +157,14 @@ function countByFile(threads) {
 
 
 // ------------------------------------------------------------------ data
-const TEMPLATE_VERSION = 'v7'
+const TEMPLATE_VERSION = 'v17'
 let DATA = JSON.parse(document.getElementById('orca-panel-data').textContent || '{}')
 const PREVIEW = window.parent === window                       // opened in a normal browser (server /panel-preview)
 const PREVIEW_TOKEN = document.querySelector('meta[name="sr-token"]')?.content ?? null
 let CONTEXT = null                                             // { displayName, branch, terminals: [{id}] }
 let ROUTE = 'review'                                            // 'review' | 'overview'
 let ACTIVE_WORKTREE = null                                      // worktree entry from DATA.worktrees
-const UI = { file: null, selection: null, dragging: false, pendingForm: false, expanded: new Set(), draft: '', drafts: {}, scrollRestored: false, picker: null, lastMessage: '' }
+const UI = { dismissedRun: null, lastRunStatus: {}, focusCandidate: null, runLogOpen: false, pendingThreads: [], pendingReplies: {}, sending: false, collapsedFiles: new Set(), filesCollapsed: true, file: null, selection: null, dragging: false, pendingForm: false, expanded: new Set(), draft: '', drafts: {}, scrollRestored: false, picker: null, lastMessage: '' }
 
 function escapeHtml(value) { return String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char])) }
 class Raw { constructor(html) { this.html = html } }
@@ -192,9 +200,13 @@ window.addEventListener('message', (event) => {
     return
   }
   if (data.type === 'orca-panel-data' && data.data && data.data.schemaVersion === 1) {   // patched host: data without reload
+    // The host re-posts the same document whenever its theme/root attributes change; only real data counts.
+    if (data.data.generatedAt && data.data.generatedAt === DATA.generatedAt) return
     DATA = data.data
-    pickWorktree()
-    render({ keepScroll: true })
+    UI.pendingThreads = []; UI.pendingReplies = {}
+    pickWorktree({ allowAutoSwitch: false })
+    notifyRunTransitions()
+    scheduleRender({ keepScroll: true })
   }
 })
 
@@ -247,23 +259,19 @@ async function previewReload() {
   const response = await fetch('/panel-preview', { headers: { 'X-SR-Token': PREVIEW_TOKEN } })
   const html = await response.text()
   const payload = /<script type="application\/json" id="orca-panel-data">([\s\S]*?)<\/script>/.exec(html)
-  if (payload) { DATA = JSON.parse(payload[1]); pickWorktree(); render({ keepScroll: true }) }
+  if (payload) { DATA = JSON.parse(payload[1]); UI.pendingThreads = []; UI.pendingReplies = {}; pickWorktree({ allowAutoSwitch: false }); notifyRunTransitions(); render({ keepScroll: true }) }
 }
 
 // ------------------------------------------------------------------ context + worktree selection
-async function loadContext() {
+async function loadContext(options = {}) {
   try { CONTEXT = await hostCall('workspace.readContext', {}) } catch (error) { CONTEXT = null; notice(error.message, true) }
-  pickWorktree()
+  pickWorktree(options)
 }
 function contextKey() { return CONTEXT ? CONTEXT.displayName + '|' + CONTEXT.branch : 'none' }
-function pickWorktree() {
+/** Best worktree for the host's focused context (shared terminals first, then branch, then display name). */
+function matchFocusedWorktree() {
   const worktrees = DATA.worktrees || []
   let match = null
-  // a worktree picked by hand in the overview sticks until the focused worktree actually changes
-  if (UI.manualWorktree && UI.manualContextKey === contextKey()) {
-    ACTIVE_WORKTREE = worktrees.find((w) => w.path === UI.manualWorktree) || ACTIVE_WORKTREE
-    if (ACTIVE_WORKTREE) return
-  }
   if (CONTEXT) {
     const contextTerminals = new Set((CONTEXT.terminals || []).map((t) => t.id))
     const shortBranch = String(CONTEXT.branch || '').replace(/^refs\/heads\//, '')
@@ -275,8 +283,25 @@ function pickWorktree() {
     }).filter((entry) => entry.score > 0).sort((a, b) => b.score - a.score)
     match = scored.length ? scored[0].w : null
   }
-  if (!match && UI.manualWorktree) match = worktrees.find((w) => w.path === UI.manualWorktree) || null
-  ACTIVE_WORKTREE = match
+  return match
+}
+function hasUnsentWork() { return Boolean(UI.pendingForm || UI.selection || UI.draft || Object.keys(UI.drafts).length) }
+/**
+ * Decides which worktree the panel shows. A worktree pinned by hand stays. Otherwise the panel follows the
+ * host focus, except that it never jumps away while a comment is being written: it offers a banner instead.
+ */
+function pickWorktree({ allowAutoSwitch = true } = {}) {
+  const worktrees = DATA.worktrees || []
+  const focused = matchFocusedWorktree()
+  if (UI.manualWorktree) {
+    ACTIVE_WORKTREE = worktrees.find((w) => w.path === UI.manualWorktree) || ACTIVE_WORKTREE || focused
+  } else if (!ACTIVE_WORKTREE || (allowAutoSwitch && !hasUnsentWork())) {
+    ACTIVE_WORKTREE = focused || ACTIVE_WORKTREE
+  } else if (ACTIVE_WORKTREE) {
+    // keep the current one; refresh its entry from the new data
+    ACTIVE_WORKTREE = worktrees.find((w) => w.path === ACTIVE_WORKTREE.path) || ACTIVE_WORKTREE
+  }
+  UI.focusCandidate = focused && ACTIVE_WORKTREE && focused.path !== ACTIVE_WORKTREE.path ? focused : null
 }
 function activeSession() {
   if (!ACTIVE_WORKTREE || !ACTIVE_WORKTREE.sessionId) return null
@@ -285,10 +310,47 @@ function activeSession() {
 
 // ------------------------------------------------------------------ rendering
 const app = document.getElementById('app')
+function captureFocus() {
+  const el = document.activeElement
+  if (!el || !(el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement || el instanceof HTMLSelectElement)) return null
+  const key = el.id ? '#' + el.id : el.dataset.replyText ? `[data-reply-text="${el.dataset.replyText}"]` : null
+  if (!key) return null
+  return { key, start: el.selectionStart, end: el.selectionEnd }
+}
+function restoreFocus(saved) {
+  if (!saved) return
+  const el = document.querySelector(saved.key)
+  if (!el) return
+  el.focus({ preventScroll: true })
+  try { if (typeof saved.start === 'number' && el.setSelectionRange) el.setSelectionRange(saved.start, saved.end) } catch { /* ignore */ }
+}
+// A re-render while a <select> is open closes it under the user's cursor: defer until it settles.
+let deferredRender = null
+function scheduleRender(options) {
+  const active = document.activeElement
+  if (active instanceof HTMLSelectElement) {
+    deferredRender = options
+    const flush = () => { active.removeEventListener('blur', flush); active.removeEventListener('change', flush); if (deferredRender) { const pending = deferredRender; deferredRender = null; render(pending) } }
+    active.addEventListener('blur', flush, { once: true })
+    active.addEventListener('change', flush, { once: true })
+    return
+  }
+  render(options)
+}
 function render({ keepScroll = false } = {}) {
   const scrollY = window.scrollY
+  const focus = captureFocus()
   saveDraft()
   renderTabs()
+  const banner = document.getElementById('focusBanner')
+  if (banner) {
+    if (UI.focusCandidate && ROUTE === 'review') {
+      banner.hidden = false
+      banner.innerHTML = h`포커스된 worktree 는 <b>${UI.focusCandidate.repoDisplayName} · ${UI.focusCandidate.branch}</b> 입니다. <button type="button" class="btn small" id="switchToFocused">그 worktree 로 전환</button>${UI.manualWorktree ? raw(' <button type="button" class="btn ghost small" id="unpinWorktree">고정 해제</button>') : ''}`
+      banner.querySelector('#switchToFocused').addEventListener('click', () => { UI.manualWorktree = null; UI.selection = null; UI.pendingForm = false; UI.draft = ''; ACTIVE_WORKTREE = UI.focusCandidate; UI.focusCandidate = null; UI.file = null; render() })
+      banner.querySelector('#unpinWorktree')?.addEventListener('click', () => { UI.manualWorktree = null; pickWorktree(); render() })
+    } else banner.hidden = true
+  }
   const session = activeSession()
   const viewState = session ? DATA.viewState?.[session.session.id] : null
   if (!UI.file && viewState?.file) UI.file = viewState.file
@@ -297,7 +359,17 @@ function render({ keepScroll = false } = {}) {
   document.getElementById('title').textContent = ACTIVE_WORKTREE ? `${ACTIVE_WORKTREE.repoDisplayName} · ${ACTIVE_WORKTREE.branch}` : 'Self Review'
   restoreDraft()
   if (keepScroll) window.scrollTo(0, scrollY)
-  else if (!UI.scrollRestored && viewState && ROUTE === 'review') { UI.scrollRestored = true; setTimeout(() => window.scrollTo(0, viewState.scroll || 0), 0) }
+  else if (!UI.scrollRestored && viewState && ROUTE === 'review') {
+    UI.scrollRestored = true
+    // After a regeneration the server tells us where the last comment went; land there instead of at the top.
+    setTimeout(() => {
+      const anchor = viewState.anchor
+      const row = anchor ? document.querySelector(`#${fileDomId(anchor.path)} .gutter[data-side="${anchor.side}"][data-line="${anchor.endLine}"]`) : null
+      if (row) row.scrollIntoView({ block: 'center' })
+      else window.scrollTo(0, viewState.scroll || 0)
+    }, 0)
+  }
+  restoreFocus(focus)
 }
 function renderTabs() {
   document.getElementById('tabs').innerHTML = h`<button type="button" class="tab ${ROUTE === 'review' ? 'active' : ''}" data-route="review">리뷰</button><button type="button" class="tab ${ROUTE === 'overview' ? 'active' : ''}" data-route="overview">전체 PR·세션</button>`
@@ -355,7 +427,12 @@ function renderReview(session) {
   const counts = countByFile(s.threads)
   app.innerHTML = h`
     <div class="card" style="margin-top:8px"><div class="card-body">
-      <div class="row">${raw(switcher)}<span class="badge">${s.status}</span><span class="muted small">base ${s.baseRef}</span><span class="muted small">파일 ${files.length}</span>${diff.error ? raw(h`<span class="badge warn">${diff.error}</span>`) : ''}</div>
+      <div class="row">${raw(switcher)}<span class="badge">${s.status}</span><label class="small muted">base <select id="baseRef">${raw([...new Set([s.baseRef, ...(session.baseCandidates || [])])].map((candidate) => h`<option value="${candidate}" ${raw(candidate === s.baseRef ? 'selected' : '')}>${candidate}</option>`).join(''))}</select></label><span class="muted small">파일 ${files.length}</span>${diff.noMergeBase ? raw('<span class="badge warn" title="base 와 공통 조상이 없어 전체 비교로 표시합니다">공통 조상 없음</span>') : ''}${diff.error ? raw(h`<span class="badge warn">${diff.error}</span>`) : ''}</div>
+      <div class="row" style="margin-top:4px">
+        <label class="small muted"><input type="checkbox" id="workingTree" ${raw(s.includeWorkingTree ? 'checked' : '')}> 미커밋 변경 포함</label>
+        ${s.includeWorkingTree ? raw(h`<label class="small muted"><input type="checkbox" id="untracked" ${raw(s.includeUntracked ? 'checked' : '')}> untracked 포함</label>`) : ''}
+        <span class="muted small">${s.includeWorkingTree ? '작업 트리 기준' : 'PR 기준 (base…HEAD 커밋만)'}</span>
+      </div>
       <div class="row" style="margin-top:6px">
         <select id="agent">${raw(['claude', 'codex'].map((name) => h`<option value="${name}" ${raw(s.agent === name ? 'selected' : '')} ${raw(agents[name]?.available ? '' : 'disabled')}>${name}${agents[name]?.available ? '' : ' (없음)'}</option>`).join(''))}</select>
         <button type="button" class="btn primary" id="runFix" ${raw(canRun ? '' : 'disabled')} title="${!agents[s.agent]?.available ? s.agent + ' CLI 없음' : runnable === 0 ? '열려 있고 최신인 스레드 없음' : live ? '실행 중' : ''}">리뷰 완료 및 AI 수정 (${runnable})</button>
@@ -364,21 +441,32 @@ function renderReview(session) {
       <div class="muted small" style="margin-top:4px">번호 거터를 드래그/Shift+클릭해 여러 줄을 고르세요 (최대 200줄).</div>
     </div></div>
     ${raw(bridgeStatusHtml())}
-    ${raw(run ? h`<div class="run"><div class="card-head">AI 수정 <span class="badge">${run.status}</span><span class="muted small">${run.agent} · 스레드 ${run.threadIds.length}${run.exitCode !== null && run.exitCode !== undefined ? ' · exit ' + run.exitCode : ''}</span><span style="flex:1"></span>${live ? raw(h`<button type="button" class="btn small danger" id="cancelRun" data-run="${run.id}">취소</button>`) : ''}</div>${run.changedFiles?.length ? raw(h`<div class="card-body small"><strong>변경 파일</strong> ${run.changedFiles.join(', ')}</div>`) : ''}<details><summary class="small" style="padding:4px 8px">로그</summary><pre>${run.logTail || '(없음)'}</pre></details></div>` : '')}
-    <div class="card ${UI.filesCollapsed ? 'files-collapsed' : ''}"><div class="card-head" id="fileListHead" style="cursor:pointer">파일 ${files.length} <span class="muted small">${UI.filesCollapsed ? '펼치기' : '접기'}</span></div><div class="card-body file-list-body" style="padding:4px">
-      ${raw(files.length === 0 ? '<div class="muted">변경 사항이 없습니다.</div>' : files.map((f) => h`<div class="file-item ${f.path === UI.file ? 'active' : ''}" data-file="${f.path}" title="${f.path}"><span class="badge">${{ added: 'A', modified: 'M', deleted: 'D', renamed: 'R', untracked: 'U' }[f.changeType] || '?'}</span><span class="name mono">${f.path}</span><span class="small"><span class="add-count">+${f.additions}</span> <span class="del-count">−${f.deletions}</span>${counts[f.path] ? ' 💬' + counts[f.path] : ''}</span></div>`).join(''))}
+    ${raw(run && UI.dismissedRun !== run.id ? runCardHtml(run) : '')}
+    <div class="card ${UI.filesCollapsed ? 'files-collapsed' : ''}"><div class="card-head"><span id="fileListHead" style="cursor:pointer">파일 ${files.length} <span class="muted small">${UI.filesCollapsed ? '목록 펼치기' : '목록 접기'}</span></span><span style="flex:1"></span><button type="button" class="btn ghost small" id="collapseAll">모두 접기</button><button type="button" class="btn ghost small" id="expandAll">모두 펼치기</button></div><div class="card-body file-list-body" style="padding:4px">
+      ${raw(files.length === 0 ? '<div class="muted">변경 사항이 없습니다.</div>' : files.map((f) => h`<div class="file-item" data-file="${f.path}" title="${f.path}"><span class="badge">${{ added: 'A', modified: 'M', deleted: 'D', renamed: 'R', untracked: 'U' }[f.changeType] || '?'}</span><span class="name mono">${f.path}</span><span class="small"><span class="add-count">+${f.additions}</span> <span class="del-count">−${f.deletions}</span>${counts[f.path] ? ' 💬' + counts[f.path] : ''}</span></div>`).join(''))}
     </div></div>
     <div id="filePanel"></div>`
   app.querySelector('#agent').addEventListener('change', (e) => act(() => send({ op: 'session.patch', sessionId: s.id, revision: s.revision, agent: e.target.value })))
+  app.querySelector('#baseRef')?.addEventListener('change', (e) => act(() => send({ op: 'session.patch', sessionId: s.id, revision: s.revision, baseRef: e.target.value })))
+  app.querySelector('#workingTree')?.addEventListener('change', (e) => act(() => send({ op: 'session.patch', sessionId: s.id, revision: s.revision, includeWorkingTree: e.target.checked })))
+  app.querySelector('#untracked')?.addEventListener('change', (e) => act(() => send({ op: 'session.patch', sessionId: s.id, revision: s.revision, includeUntracked: e.target.checked })))
   app.querySelector('#runFix').addEventListener('click', () => act(() => send({ op: 'run.start', sessionId: s.id, revision: s.revision, agent: s.agent })))
   app.querySelector('#completeSession').addEventListener('click', () => { const open = s.threads.filter((t) => t.status === 'open').length; if (open === 0 || confirm(`열린 스레드가 ${open}개 남아 있습니다. 완료할까요?`)) act(() => send({ op: 'session.complete', sessionId: s.id })) })
   app.querySelector('#cancelRun')?.addEventListener('click', (e) => act(() => send({ op: 'run.cancel', runId: e.currentTarget.dataset.run })))
+  app.querySelector('#runLog')?.addEventListener('toggle', (e) => { UI.runLogOpen = e.target.open })
+  app.querySelector('#dismissRun')?.addEventListener('click', () => { UI.dismissedRun = run.id; render({ keepScroll: true }) })
+  for (const b of app.querySelectorAll('[data-jump-file]')) b.addEventListener('click', () => { const path = b.dataset.jumpFile; UI.collapsedFiles.delete(path); refreshFile(path); document.getElementById(fileDomId(path))?.scrollIntoView({ block: 'start' }) })
+  startRunTicker(run)
   app.querySelector('#fileListHead').addEventListener('click', () => { UI.filesCollapsed = !UI.filesCollapsed; render({ keepScroll: true }) })
+  app.querySelector('#collapseAll').addEventListener('click', () => { for (const f of files) UI.collapsedFiles.add(f.path); renderFile(session) })
+  app.querySelector('#expandAll').addEventListener('click', () => { UI.collapsedFiles.clear(); renderFile(session) })
   for (const item of app.querySelectorAll('[data-file]')) item.addEventListener('click', () => {
-    UI.file = item.dataset.file; UI.selection = null; UI.pendingForm = false; UI.filesCollapsed = true; render({ keepScroll: false })
+    UI.file = item.dataset.file
     const picked = files.find((f) => f.path === UI.file)
-    if (picked && picked.panelTruncated) act(() => send({ op: 'view', sessionId: s.id, route: ROUTE, file: UI.file, scroll: 0, loadFile: true }))
-    else sendView(s.id)
+    UI.collapsedFiles.delete(UI.file)
+    refreshFile(UI.file)
+    document.getElementById(fileDomId(UI.file))?.scrollIntoView({ block: 'start' })
+    if (picked && picked.panelTruncated) act(() => send({ op: 'view', sessionId: s.id, route: ROUTE, file: UI.file, scroll: window.scrollY, loadFile: true }))
   })
   bindWorktreeSwitcher()
   bindBridgePicker()
@@ -399,6 +487,66 @@ function bindWorktreeSwitcher() {
   })
 }
 
+const RUN_LABELS = { queued: '대기 중', running: '실행 중', succeeded: '완료', failed: '실패', cancelled: '취소됨', interrupted: '중단됨 (서버 재시작)' }
+function formatDuration(ms) { const sec = Math.max(0, Math.round(ms / 1000)); return sec < 60 ? sec + '초' : Math.floor(sec / 60) + '분 ' + (sec % 60) + '초' }
+function runCardHtml(run) {
+  const live = run.status === 'running' || run.status === 'queued'
+  const started = new Date(run.startedAt)
+  const ended = run.endedAt ? new Date(run.endedAt) : null
+  const changed = run.changedFiles || []
+  return h`<div class="run ${live ? 'live' : ''}">
+    <div class="card-head">${live ? raw('<span class="spinner"></span>') : ''}AI 수정 <span class="badge ${live ? 'warn' : ''}">${RUN_LABELS[run.status] || run.status}</span><span class="muted small">${run.agent} · 스레드 ${run.threadIds.length}개 · <span id="runElapsed" data-started="${run.startedAt}" data-ended="${run.endedAt || ''}">${formatDuration((ended || new Date()) - started)}</span>${run.exitCode !== null && run.exitCode !== undefined ? ' · exit ' + run.exitCode : ''}</span><span style="flex:1"></span>${live ? raw(h`<button type="button" class="btn small danger" id="cancelRun" data-run="${run.id}">취소</button>`) : raw('<button type="button" class="btn ghost small" id="dismissRun">닫기</button>')}</div>
+    ${live ? raw(h`<div class="card-body small muted">${run.agent} 가 코멘트대로 코드를 고치는 중입니다. 끝나면 이 카드가 "완료"로 바뀌고 diff 가 자동 갱신됩니다. 시작 ${started.toLocaleTimeString()}</div>`) : ''}
+    ${!live ? raw(h`<div class="card-body small"><div>${run.status === 'succeeded' ? '에이전트가 작업을 마쳤습니다.' : run.status === 'failed' ? '에이전트가 오류로 끝났습니다 (로그 확인).' : run.status === 'cancelled' ? '취소되었습니다.' : '서버 재시작으로 추적이 끊겼습니다.'} ${started.toLocaleTimeString()} → ${ended ? ended.toLocaleTimeString() : '—'}</div>
+      <div style="margin-top:4px"><strong>변경 파일 ${changed.length}개</strong>${changed.length ? '' : ' — 파일 변경이 감지되지 않았습니다. 로그에서 사유를 확인하세요.'}</div>
+      ${raw(changed.map((path) => h`<div><button type="button" class="btn ghost small mono" data-jump-file="${path}">${path}</button></div>`).join(''))}
+      <div class="muted" style="margin-top:4px">AI 의 수정은 <b>아직 커밋되지 않은 작업 트리 변경</b>이라 PR 기준 diff 에는 나타나지 않습니다. 아래 "AI 가 바꾼 내용"에서 확인하고, 괜찮으면 커밋하세요. 이 실행의 대상 스레드에는 <span class="badge">AI 실행 포함</span> 표시가 붙습니다.</div></div>
+    ${raw(aiChangesHtml(run))}`) : ''}
+    <details id="runLog" ${raw(UI.runLogOpen ? 'open' : '')}><summary class="small" style="padding:4px 8px">로그${live ? ' (10초마다 갱신)' : ''}</summary><pre>${run.logTail || '(아직 출력 없음)'}</pre></details></div>`
+}
+function aiChangesHtml(run) {
+  const changes = run.aiChanges
+  if (!changes) return ''
+  if (changes.error) return h`<div class="card-body small muted">AI 변경 내용을 읽지 못했습니다: ${changes.error}</div>`
+  if (!changes.length) return '<div class="card-body small muted">변경 파일이 기록됐지만 현재 작업 트리에서는 차이가 없습니다 (이미 커밋했거나 되돌린 경우).</div>'
+  const blocks = changes.map((file) => {
+    const rows = []
+    if (file.binary || file.truncated || !file.hunks.length) rows.push('<div class="empty">' + (file.binary ? '바이너리 파일' : '패널에 표시하기엔 큽니다 — "넓게" 로 보세요.') + '</div>')
+    else {
+      rows.push('<table class="diff"><colgroup><col class="g"><col class="m"><col></colgroup><tbody>')
+      for (const hunk of file.hunks) {
+        rows.push(h`<tr class="hunk"><td colspan="3">${hunk.header}</td></tr>`)
+        for (const line of hunk.lines) {
+          const number = line.type === 'del' ? line.oldNo : line.newNo
+          rows.push(h`<tr class="${line.type}"><td class="gutter disabled">${number ?? ''}</td><td class="marker">${line.type === 'add' ? '+' : line.type === 'del' ? '−' : ''}</td><td class="code">${line.text}</td></tr>`)
+        }
+      }
+      rows.push('</tbody></table>')
+    }
+    return h`<div class="file-block" data-ai-file="${file.path}"><div class="file-head" style="position:static"><span class="name mono" title="${file.path}">${file.path}</span><span class="badge">${file.changeType}</span><span class="small"><span class="add-count">+${file.additions}</span> <span class="del-count">−${file.deletions}</span></span></div>${raw(rows.join(''))}</div>`
+  })
+  return '<div class="card-head" style="border-top:1px solid var(--border)">AI 가 바꾼 내용 <span class="muted small">HEAD 대비 작업 트리 · 파일 ' + changes.length + '개 · 커밋 전</span></div><div style="padding:6px 0">' + blocks.join('') + '</div>'
+}
+let runTicker = null
+function startRunTicker(run) {
+  clearInterval(runTicker)
+  if (!run || !(run.status === 'running' || run.status === 'queued')) return
+  runTicker = setInterval(() => {
+    const el = document.getElementById('runElapsed')
+    if (!el) { clearInterval(runTicker); return }
+    el.textContent = formatDuration(Date.now() - new Date(el.dataset.started).getTime())
+  }, 1000)
+}
+function notifyRunTransitions() {
+  for (const [sessionId, run] of Object.entries(DATA.runs || {})) {
+    const previous = UI.lastRunStatus[sessionId]
+    UI.lastRunStatus[sessionId] = run.status
+    if (previous && previous !== run.status && !(run.status === 'running' || run.status === 'queued')) {
+      if (UI.dismissedRun === run.id) UI.dismissedRun = null
+      hostCall('notifications.show', { title: 'Local Self Review', body: `AI 수정 ${RUN_LABELS[run.status] || run.status} · 변경 파일 ${(run.changedFiles || []).length}개` }).catch(() => {})
+    }
+  }
+}
 function bridgeStatusHtml() {
   if (PREVIEW) return ''
   const terminalId = bridgeTerminalId()
@@ -426,59 +574,109 @@ function bindBridgePicker() {
   })
 }
 
+function fileDomId(path) { return 'file-' + String(path).replace(/[^a-zA-Z0-9_-]/g, (c) => '_' + c.charCodeAt(0).toString(16)) }
+
+function fileBlockHtml(session, file) {
+  const { session: s } = session
+  const canComment = Boolean(PREVIEW || bridgeTerminalId())
+  const threads = [...s.threads.filter((t) => t.path === file.path), ...UI.pendingThreads.filter((t) => t.path === file.path)]
+  const placement = placeThreads(threads)
+  const collapsed = UI.collapsedFiles.has(file.path)
+  const out = []
+  const add = (x) => { out[out.length] = x }
+  add(h`<div class="file-block ${collapsed ? 'collapsed' : ''}" id="${fileDomId(file.path)}" data-file-block="${file.path}">`)
+  add(h`<div class="file-head"><button type="button" class="btn ghost small" data-toggle-file="${file.path}" title="${collapsed ? '펼치기' : '접기'}">${collapsed ? '▸' : '▾'}</button><span class="name mono" title="${file.path}">${file.path}${file.oldPath ? raw(h`<span class="muted"> ← ${file.oldPath}</span>`) : ''}</span><span class="badge">${file.changeType}</span><span class="small"><span class="add-count">+${file.additions}</span> <span class="del-count">−${file.deletions}</span>${threads.length ? ' 💬' + threads.length : ''}</span></div>`)
+  if (!collapsed) {
+    if (file.binary || file.truncated || !file.hunks.length) {
+      add(h`<div class="empty">${file.binary ? '바이너리 파일' : file.panelTruncated ? '이 파일의 diff 는 아직 패널에 실리지 않았습니다.' : file.truncated ? 'diff가 20,000줄을 초과합니다.' : '표시할 hunk 없음'}${file.panelTruncated ? raw(h`<div style="margin-top:6px"><button type="button" class="btn primary small" data-load-file="${file.path}">이 파일 불러오기</button></div>`) : ''}</div>`)
+    } else {
+      add('<table class="diff"><colgroup><col class="g"><col class="m"><col></colgroup><tbody>')
+      for (const hunk of file.hunks) {
+        add(h`<tr class="hunk"><td colspan="3">${hunk.header}</td></tr>`)
+        for (const line of hunk.lines) {
+          const side = line.type === 'del' ? 'old' : 'new'
+          const number = side === 'old' ? line.oldNo : line.newNo
+          const selected = number !== null && isLineSelected(UI.selection, { path: file.path, side, line: number })
+          const enabled = canComment && number !== null
+          add(h`<tr class="${line.type}${selected ? ' selected' : ''}"><td class="gutter ${enabled ? '' : 'disabled'}" ${raw(enabled ? `tabindex="0" data-path="${escapeHtml(file.path)}" data-side="${side}" data-line="${number}"` : '')}>${number ?? ''}</td><td class="marker">${line.type === 'add' ? '+' : line.type === 'del' ? '−' : ''}</td><td class="code">${line.text}</td></tr>`)
+          if (number !== null) {
+            const here = placement[threadKey(file.path, side, number)]
+            if (here) add(`<tr class="thread-row"><td colspan="3">${here.map(threadHtml).join('')}</td></tr>`)
+            if (UI.pendingForm && UI.selection && UI.selection.path === file.path && UI.selection.side === side && clampRange(UI.selection).endLine === number) add(`<tr class="thread-row"><td colspan="3">${formHtml()}</td></tr>`)
+          }
+        }
+      }
+      add('</tbody></table>')
+      const orphaned = threads.filter((t) => !file.hunks.some((hk) => hk.lines.some((l) => (t.side === 'old' ? l.oldNo : l.newNo) === t.endLine)))
+      if (orphaned.length) add('<div class="card-body"><div class="small muted">현재 diff 에서 위치를 찾지 못한 스레드</div>' + orphaned.map(threadHtml).join('') + '</div>')
+    }
+  }
+  add('</div>')
+  return out.join('')
+}
+
+function bindFileBlock(host, session) {
+  const { session: s } = session
+  for (const b of host.querySelectorAll('[data-toggle-file]')) b.addEventListener('click', () => { const path = b.dataset.toggleFile; if (UI.collapsedFiles.has(path)) UI.collapsedFiles.delete(path); else UI.collapsedFiles.add(path); refreshFile(path) })
+  for (const b of host.querySelectorAll('[data-load-file]')) b.addEventListener('click', () => act(() => send({ op: 'view', sessionId: s.id, route: ROUTE, file: b.dataset.loadFile, scroll: window.scrollY, loadFile: true })))
+  bindThreadHandlers(host, s)
+}
+
+/** Renders every changed file in sequence (PR "Files changed" layout). */
 function renderFile(session) {
   const host = document.getElementById('filePanel')
   if (!host) return
-  const { session: s, diff } = session
-  const file = (diff.files || []).find((f) => f.path === UI.file)
-  if (!file) { host.innerHTML = '<div class="empty">파일을 선택하세요.</div>'; return }
-  const canComment = Boolean(PREVIEW || bridgeTerminalId())
-  const threads = s.threads.filter((t) => t.path === file.path)
-  const placement = placeThreads(threads)
-  const parts = []
-  parts.push(h`<div class="file-head"><span class="name mono" title="${file.path}">${file.path}</span><span class="badge">${file.changeType}</span><span class="small"><span class="add-count">+${file.additions}</span> <span class="del-count">−${file.deletions}</span></span></div>`)
-  if (file.binary || file.truncated || !file.hunks.length) {
-    parts.push(h`<div class="empty">${file.binary ? '바이너리 파일' : file.panelTruncated ? '이 파일의 diff 는 아직 패널에 실리지 않았습니다.' : file.truncated ? 'diff가 20,000줄을 초과합니다.' : '표시할 hunk 없음'}${file.panelTruncated ? raw('<div style="margin-top:6px"><button type="button" class="btn primary small" id="loadFile">이 파일 불러오기</button></div>') : ''}</div>`)
-    host.innerHTML = parts.join('')
-    host.querySelector('#loadFile')?.addEventListener('click', () => act(() => send({ op: 'view', sessionId: s.id, route: ROUTE, file: file.path, scroll: 0, loadFile: true })))
-    return
-  }
-  const rows = []
-  rows.push('<table class="diff"><colgroup><col class="g"><col class="m"><col></colgroup><tbody>')
-  for (const hunk of file.hunks) {
-    rows.push(h`<tr class="hunk"><td colspan="3">${hunk.header}</td></tr>`)
-    for (const line of hunk.lines) {
-      const side = line.type === 'del' ? 'old' : 'new'
-      const number = side === 'old' ? line.oldNo : line.newNo
-      const selected = number !== null && isLineSelected(UI.selection, { path: file.path, side, line: number })
-      const enabled = canComment && number !== null
-      rows.push(h`<tr class="${line.type}${selected ? ' selected' : ''}"><td class="gutter ${enabled ? '' : 'disabled'}" ${raw(enabled ? `tabindex="0" data-path="${escapeHtml(file.path)}" data-side="${side}" data-line="${number}"` : '')}>${number ?? ''}</td><td class="marker">${line.type === 'add' ? '+' : line.type === 'del' ? '−' : ''}</td><td class="code">${line.text}</td></tr>`)
-      if (number !== null) {
-        const here = placement[threadKey(file.path, side, number)]
-        if (here) rows.push(`<tr class="thread-row"><td colspan="3">${here.map(threadHtml).join('')}</td></tr>`)
-        if (UI.pendingForm && UI.selection && UI.selection.path === file.path && UI.selection.side === side && clampRange(UI.selection).endLine === number) rows.push(`<tr class="thread-row"><td colspan="3">${formHtml()}</td></tr>`)
-      }
-    }
-  }
-  rows.push('</tbody></table>')
-  const orphaned = threads.filter((t) => !file.hunks.some((hk) => hk.lines.some((l) => (t.side === 'old' ? l.oldNo : l.newNo) === t.endLine)))
-  if (orphaned.length) rows.push('<div class="card-body"><div class="small muted">현재 diff 에서 위치를 찾지 못한 스레드</div>' + orphaned.map(threadHtml).join('') + '</div>')
-  host.innerHTML = parts.join('') + rows.join('')
-  bindThreadHandlers(host, s)
+  const files = session.diff.files || []
+  const known = new Set(files.map((file) => file.path))
+  const elsewhere = session.session.threads.filter((thread) => !known.has(thread.path))
+  const blocks = files.length ? files.map((file) => fileBlockHtml(session, file)).join('') : '<div class="empty">변경 사항이 없습니다.</div>'
+  const orphanSection = elsewhere.length
+    ? '<div class="card" id="orphan-threads"><div class="card-head">현재 diff 에 없는 파일의 스레드 <span class="muted small">' + elsewhere.length + '</span></div><div class="card-body small muted">base 나 비교 모드를 바꾸면 다시 diff 안에 나타날 수 있습니다. 해결·삭제·답글은 그대로 가능합니다.</div><div class="card-body">' +
+      elsewhere.map((thread) => '<div class="muted small mono" style="margin-top:6px">' + escapeHtml(thread.path) + '</div>' + threadHtml(thread)).join('') + '</div></div>'
+    : ''
+  host.innerHTML = blocks + orphanSection
+  bindFileBlock(host, session)
+}
+
+/** Re-renders a single file block (used while dragging so the whole page does not repaint). */
+function refreshFile(path) {
+  const session = activeSession()
+  const file = session?.diff.files.find((f) => f.path === path)
+  const old = document.getElementById(fileDomId(path))
+  if (!session || !file || !old) { if (session) renderFile(session); return }
+  const focus = captureFocus()
+  saveDraft()
+  const wrapper = document.createElement('div')
+  wrapper.innerHTML = fileBlockHtml(session, file)
+  const fresh = wrapper.firstElementChild
+  old.replaceWith(fresh)
+  bindFileBlock(fresh, session)
+  restoreDraft()
+  restoreFocus(focus)
 }
 
 function threadHtml(thread) {
   const expanded = UI.expanded.has(thread.id)
   const range = thread.startLine === thread.endLine ? 'L' + thread.startLine : 'L' + thread.startLine + '–L' + thread.endLine
+  const pendingReplies = UI.pendingReplies[thread.id] || []
+  const busy = UI.sending ? 'disabled' : ''
+  const latestRun = activeSession() ? DATA.runs?.[activeSession().session.id] : null
+  const handledByAi = latestRun && latestRun.status === 'succeeded' && (latestRun.threadIds || []).includes(thread.id)
+  if (thread.pending) {
+    return h`<div class="thread pending" data-thread="${thread.id}">
+      <div class="thread-head"><span class="badge warn">전송 중…</span><span class="mono">${thread.side} ${range}</span><span class="grow"></span><span class="muted small">브리지 → 서버, 곧 갱신됩니다</span></div>
+      <div class="thread-body">${raw(thread.comments.map((c) => h`<div class="comment"><div class="meta"><span>나</span><span>방금</span></div><div class="body">${c.body}</div></div>`).join(''))}</div></div>`
+  }
   return h`<div class="thread ${thread.status === 'resolved' ? 'resolved' : ''} ${expanded ? 'expanded' : ''}" data-thread="${thread.id}">
-    <div class="thread-head"><span class="badge">${thread.status === 'open' ? '열림' : '해결'}</span>${thread.applicability === 'outdated' ? raw('<span class="badge warn" title="현재 diff에서 원문을 찾지 못함">outdated</span>') : ''}<span class="mono">${thread.side} ${range}</span><span class="grow"></span>${thread.status === 'resolved' ? raw(h`<button type="button" class="btn ghost small" data-toggle="${thread.id}">${expanded ? '접기' : '펼치기'}</button>`) : ''}<button type="button" class="btn small" data-thread-status="${thread.status === 'open' ? 'resolved' : 'open'}" data-thread="${thread.id}">${thread.status === 'open' ? '해결' : '다시 열기'}</button><button type="button" class="btn small danger" data-thread-delete="${thread.id}">삭제</button></div>
-    <div class="thread-body">${raw(thread.comments.map((c) => h`<div class="comment" data-comment="${c.id}"><div class="meta"><span>나</span><span>${formatTime(c.createdAt)}</span><span class="grow"></span><button type="button" class="btn ghost small" data-comment-edit="${c.id}" data-thread="${thread.id}">수정</button><button type="button" class="btn ghost small" data-comment-delete="${c.id}" data-thread="${thread.id}">삭제</button></div><div class="body">${c.body}</div></div>`).join(''))}
-      <div class="form"><textarea rows="2" placeholder="답글…" data-reply-text="${thread.id}"></textarea><div class="actions"><button type="button" class="btn primary small" data-reply="${thread.id}">답글</button></div></div></div></div>`
+    <div class="thread-head"><span class="badge">${thread.status === 'open' ? '열림' : '해결'}</span>${thread.applicability === 'outdated' ? raw('<span class="badge warn" title="현재 diff에서 원문을 찾지 못함">outdated</span>') : ''}${handledByAi ? raw('<span class="badge" title="마지막 AI 실행의 대상 스레드 — 결과는 실행 카드의 \'AI 가 바꾼 내용\' 참고">AI 실행 포함</span>') : ''}<span class="mono">${thread.side} ${range}</span><span class="grow"></span>${thread.status === 'resolved' ? raw(h`<button type="button" class="btn ghost small" data-toggle="${thread.id}">${expanded ? '접기' : '펼치기'}</button>`) : ''}<button type="button" class="btn small" ${raw(busy)} data-thread-status="${thread.status === 'open' ? 'resolved' : 'open'}" data-thread="${thread.id}">${thread.status === 'open' ? '해결' : '다시 열기'}</button><button type="button" class="btn small danger" ${raw(busy)} data-thread-delete="${thread.id}">삭제</button></div>
+    <div class="thread-body">${raw(thread.comments.map((c) => h`<div class="comment" data-comment="${c.id}"><div class="meta"><span>나</span><span>${formatTime(c.createdAt)}</span><span class="grow"></span><button type="button" class="btn ghost small" ${raw(busy)} data-comment-edit="${c.id}" data-thread="${thread.id}">수정</button><button type="button" class="btn ghost small" ${raw(busy)} data-comment-delete="${c.id}" data-thread="${thread.id}">삭제</button></div><div class="body">${c.body}</div></div>`).join(''))}
+      ${raw(pendingReplies.map((body) => h`<div class="comment pending"><div class="meta"><span>나</span><span class="badge warn">전송 중…</span></div><div class="body">${body}</div></div>`).join(''))}
+      <div class="form"><textarea rows="2" placeholder="답글…" data-reply-text="${thread.id}"></textarea><div class="actions"><button type="button" class="btn primary small" ${raw(busy)} data-reply="${thread.id}">답글</button></div></div></div></div>`
 }
 function formHtml() {
   const { startLine, endLine } = clampRange(UI.selection)
   const range = startLine === endLine ? 'L' + startLine : 'L' + startLine + '–L' + endLine + ' (' + (endLine - startLine + 1) + '줄)'
-  return h`<div class="thread"><div class="thread-head"><span class="mono">${UI.selection.side} ${range}</span><span class="grow"></span><span class="muted small">⌘/Ctrl+Enter 등록</span></div><div class="form"><textarea id="newComment" rows="3" placeholder="코멘트를 입력하세요">${UI.draft}</textarea><div class="actions"><button type="button" class="btn small" id="cancelComment">취소</button><button type="button" class="btn primary small" id="submitComment">코멘트 등록</button></div></div></div>`
+  return h`<div class="thread"><div class="thread-head"><span class="mono">${UI.selection.side} ${range}</span><span class="grow"></span><span class="muted small">⌘/Ctrl+Enter 등록</span></div><div class="form"><textarea id="newComment" rows="3" placeholder="코멘트를 입력하세요">${UI.draft}</textarea><div class="actions"><button type="button" class="btn small" id="cancelComment">취소</button><button type="button" class="btn primary small" id="submitComment" ${raw(UI.sending ? 'disabled' : '')}>${UI.sending ? '전송 중…' : '코멘트 등록'}</button></div></div></div>`
 }
 function selectedText(session, selection) {
   const file = session.diff.files.find((f) => f.path === selection.path)
@@ -497,17 +695,49 @@ function bindThreadHandlers(host, s) {
   host.querySelector('#newComment')?.addEventListener('keydown', (e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') submitNewComment(); if (e.key === 'Escape') { UI.selection = null; UI.pendingForm = false; UI.draft = ''; render({ keepScroll: true }) } })
   function submitNewComment() {
     const textarea = host.querySelector('#newComment')
-    if (!textarea || !textarea.value.trim()) return
+    if (!textarea || !textarea.value.trim() || UI.sending) return
     const { startLine, endLine } = clampRange(UI.selection)
-    const file = session.diff.files.find((f) => f.path === UI.selection.path)
-    const op = { op: 'thread.add', sessionId: s.id, revision: s.revision, path: UI.selection.path, oldPath: file?.oldPath ?? null, side: UI.selection.side, startLine, endLine, selectedText: selectedText(session, UI.selection), body: textarea.value }
-    UI.draft = textarea.value
-    act(() => send(op), () => { UI.selection = null; UI.pendingForm = false; UI.draft = '' })
+    const selection = UI.selection
+    const file = session.diff.files.find((f) => f.path === selection.path)
+    const body = textarea.value
+    const op = { op: 'thread.add', sessionId: s.id, revision: s.revision, path: selection.path, oldPath: file?.oldPath ?? null, side: selection.side, startLine, endLine, selectedText: selectedText(session, selection), body }
+    // Optimistic: show the comment in place right away and close the form; the regenerated panel replaces it.
+    const placeholder = { id: 'pending_' + Date.now(), pending: true, path: selection.path, side: selection.side, startLine, endLine, status: 'open', applicability: 'current', comments: [{ id: 'p', body }] }
+    UI.pendingThreads.push(placeholder)
+    textarea.value = ''                       // must happen before refreshFile(): saveDraft() reads the live textarea
+    UI.selection = null; UI.pendingForm = false; UI.draft = ''
+    UI.sending = true
+    refreshFile(selection.path)
+    send(op, { silent: true }).then(() => { UI.sending = false; refreshFile(selection.path) }).catch((error) => {
+      UI.sending = false
+      UI.pendingThreads = UI.pendingThreads.filter((t) => t !== placeholder)
+      UI.selection = selection; UI.pendingForm = true; UI.draft = body
+      refreshFile(selection.path)
+      notice(error.message, true)
+    })
   }
   for (const b of host.querySelectorAll('[data-toggle]')) b.addEventListener('click', () => { const id = b.dataset.toggle; if (UI.expanded.has(id)) UI.expanded.delete(id); else UI.expanded.add(id); render({ keepScroll: true }) })
   for (const b of host.querySelectorAll('[data-thread-status]')) b.addEventListener('click', () => act(() => send({ op: 'thread.patch', sessionId: s.id, revision: s.revision, threadId: b.dataset.thread, status: b.dataset.threadStatus })))
   for (const b of host.querySelectorAll('[data-thread-delete]')) b.addEventListener('click', () => { if (confirm('스레드를 삭제할까요?')) act(() => send({ op: 'thread.delete', sessionId: s.id, revision: s.revision, threadId: b.dataset.threadDelete })) })
-  for (const b of host.querySelectorAll('[data-reply]')) b.addEventListener('click', () => { const ta = host.querySelector(`[data-reply-text="${b.dataset.reply}"]`); if (!ta.value.trim()) return; UI.drafts[b.dataset.reply] = ta.value; act(() => send({ op: 'comment.add', sessionId: s.id, revision: s.revision, threadId: b.dataset.reply, body: ta.value }), () => { delete UI.drafts[b.dataset.reply] }) })
+  for (const b of host.querySelectorAll('[data-reply]')) b.addEventListener('click', () => {
+    const threadId = b.dataset.reply
+    const ta = host.querySelector(`[data-reply-text="${threadId}"]`)
+    if (!ta || !ta.value.trim() || UI.sending) return
+    const body = ta.value
+    const thread = s.threads.find((t) => t.id === threadId)
+    UI.pendingReplies[threadId] = [...(UI.pendingReplies[threadId] || []), body]
+    ta.value = ''                             // before refreshFile(): saveDraft() would otherwise re-capture the sent text
+    delete UI.drafts[threadId]
+    UI.sending = true
+    if (thread) refreshFile(thread.path)
+    send({ op: 'comment.add', sessionId: s.id, revision: s.revision, threadId, body }, { silent: true }).then(() => { UI.sending = false; if (thread) refreshFile(thread.path) }).catch((error) => {
+      UI.sending = false
+      UI.pendingReplies[threadId] = (UI.pendingReplies[threadId] || []).filter((x) => x !== body)
+      UI.drafts[threadId] = body
+      if (thread) refreshFile(thread.path)
+      notice(error.message, true)
+    })
+  })
   for (const b of host.querySelectorAll('[data-comment-delete]')) b.addEventListener('click', () => { if (confirm('코멘트를 삭제할까요?')) act(() => send({ op: 'comment.delete', sessionId: s.id, revision: s.revision, threadId: b.dataset.thread, commentId: b.dataset.commentDelete })) })
   for (const b of host.querySelectorAll('[data-comment-edit]')) b.addEventListener('click', () => {
     const commentEl = host.querySelector(`[data-comment="${b.dataset.commentEdit}"] .body`)
@@ -530,27 +760,29 @@ app.addEventListener('mousedown', (event) => {
   if (!cell || event.button !== 0) return
   event.preventDefault()
   UI.pendingForm = false
+  const previousPath = UI.selection?.path
   UI.selection = event.shiftKey && UI.selection ? extendSelection(UI.selection, cell) : beginSelection(cell)
   UI.dragging = true
-  renderFile(activeSession())
+  if (previousPath && previousPath !== UI.selection.path) refreshFile(previousPath)
+  refreshFile(UI.selection.path)
 })
 app.addEventListener('mouseover', (event) => {
   if (!UI.dragging) return
   const cell = cellFromEvent(event)
   if (!cell) return
   const next = extendSelection(UI.selection, cell)
-  if (next !== UI.selection) { UI.selection = next; renderFile(activeSession()) }
+  if (next !== UI.selection) { UI.selection = next; refreshFile(UI.selection.path) }
 })
-window.addEventListener('mouseup', () => { if (!UI.dragging) return; UI.dragging = false; if (UI.selection) { UI.pendingForm = true; renderFile(activeSession()); setTimeout(() => document.getElementById('newComment')?.focus(), 0) } })
+window.addEventListener('mouseup', () => { if (!UI.dragging) return; UI.dragging = false; if (UI.selection) { UI.pendingForm = true; refreshFile(UI.selection.path); setTimeout(() => document.getElementById('newComment')?.focus(), 0) } })
 app.addEventListener('keydown', (event) => {
   const cell = cellFromEvent(event)
   if (!cell) return
-  if (event.key === 'Enter') { event.preventDefault(); UI.selection = beginSelection(cell); UI.pendingForm = true; renderFile(activeSession()); setTimeout(() => document.getElementById('newComment')?.focus(), 0) }
+  if (event.key === 'Enter') { event.preventDefault(); UI.selection = beginSelection(cell); UI.pendingForm = true; refreshFile(UI.selection.path); setTimeout(() => document.getElementById('newComment')?.focus(), 0) }
   if (event.shiftKey && (event.key === 'ArrowDown' || event.key === 'ArrowUp') && UI.selection) {
     event.preventDefault()
     UI.selection = extendSelection(UI.selection, { ...cell, line: UI.selection.head + (event.key === 'ArrowDown' ? 1 : -1) })
     UI.pendingForm = true
-    renderFile(activeSession())
+    refreshFile(UI.selection.path)
     app.querySelector(`.gutter[data-side="${UI.selection.side}"][data-line="${UI.selection.head}"]`)?.focus()
   }
 })
@@ -563,7 +795,10 @@ async function act(operation, onSuccess) {
 function saveDraft() {
   const ta = document.getElementById('newComment')
   if (ta) UI.draft = ta.value
-  for (const el of document.querySelectorAll('[data-reply-text]')) if (el.value) UI.drafts[el.dataset.replyText] = el.value
+  for (const el of document.querySelectorAll('[data-reply-text]')) {
+    if (el.value) UI.drafts[el.dataset.replyText] = el.value
+    else delete UI.drafts[el.dataset.replyText]
+  }
 }
 function restoreDraft() {
   for (const el of document.querySelectorAll('[data-reply-text]')) if (UI.drafts[el.dataset.replyText]) el.value = UI.drafts[el.dataset.replyText]
@@ -574,13 +809,14 @@ function sendView(sessionId) {
   clearTimeout(viewTimer)
   viewTimer = setTimeout(() => { send({ op: 'view', sessionId, route: ROUTE, file: UI.file, scroll: window.scrollY }, { silent: true }).catch(() => {}) }, 1200)
 }
-window.addEventListener('scroll', () => { const s = activeSession(); if (s && ROUTE === 'review') sendView(s.session.id) }, { passive: true })
+// Scroll position is intentionally NOT synced through the bridge: every terminal.sendText moves focus to the terminal.
 
 document.getElementById('btnRefreshOverview').addEventListener('click', () => act(() => send({ op: 'overview.refresh' })))
 document.getElementById('btnWide').addEventListener('click', () => { const s = activeSession(); if (s) act(() => send({ op: 'wide', sessionId: s.session.id })); else notice('세션을 먼저 시작하세요.', true) })
 
 // ------------------------------------------------------------------ boot
 loadContext().then(() => {
+  for (const [sessionId, run] of Object.entries(DATA.runs || {})) UI.lastRunStatus[sessionId] = run.status
   const s = activeSession()
   const viewState = s ? DATA.viewState?.[s.session.id] : null
   if (viewState?.route) ROUTE = viewState.route
@@ -591,7 +827,7 @@ loadContext().then(() => {
 // a full re-render in the middle of a click swallows that click (the target node is replaced).
 window.addEventListener('focus', () => {
   const before = contextKey()
-  loadContext().then(() => { if (contextKey() !== before) render({ keepScroll: true }) })
+  loadContext({ allowAutoSwitch: false }).then(() => { if (contextKey() !== before) scheduleRender({ keepScroll: true }) })
 })
 </script>
 </body>
