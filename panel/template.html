@@ -305,7 +305,12 @@ function renderReview(session) {
   app.querySelector('#completeSession').addEventListener('click', () => { const open = s.threads.filter((t) => t.status === 'open').length; if (open === 0 || confirm(`열린 스레드가 ${open}개 남아 있습니다. 완료할까요?`)) act(() => send({ op: 'session.complete', sessionId: s.id })) })
   app.querySelector('#cancelRun')?.addEventListener('click', (e) => act(() => send({ op: 'run.cancel', runId: e.currentTarget.dataset.run })))
   app.querySelector('#fileListHead').addEventListener('click', () => { UI.filesCollapsed = !UI.filesCollapsed; render({ keepScroll: true }) })
-  for (const item of app.querySelectorAll('[data-file]')) item.addEventListener('click', () => { UI.file = item.dataset.file; UI.selection = null; UI.pendingForm = false; UI.filesCollapsed = true; render({ keepScroll: false }); sendView(s.id) })
+  for (const item of app.querySelectorAll('[data-file]')) item.addEventListener('click', () => {
+    UI.file = item.dataset.file; UI.selection = null; UI.pendingForm = false; UI.filesCollapsed = true; render({ keepScroll: false })
+    const picked = files.find((f) => f.path === UI.file)
+    if (picked && picked.panelTruncated) act(() => send({ op: 'view', sessionId: s.id, route: ROUTE, file: UI.file, scroll: 0, loadFile: true }))
+    else sendView(s.id)
+  })
   bindBridgePicker()
   renderFile(session)
 }
@@ -347,8 +352,9 @@ function renderFile(session) {
   const parts = []
   parts.push(h`<div class="file-head"><span class="name mono" title="${file.path}">${file.path}</span><span class="badge">${file.changeType}</span><span class="small"><span class="add-count">+${file.additions}</span> <span class="del-count">−${file.deletions}</span></span></div>`)
   if (file.binary || file.truncated || !file.hunks.length) {
-    parts.push(h`<div class="empty">${file.binary ? '바이너리 파일' : file.panelTruncated ? '패널에 표시하기엔 큽니다 — "넓게" 로 보세요.' : file.truncated ? 'diff가 20,000줄을 초과합니다.' : '표시할 hunk 없음'}</div>`)
+    parts.push(h`<div class="empty">${file.binary ? '바이너리 파일' : file.panelTruncated ? '이 파일의 diff 는 아직 패널에 실리지 않았습니다.' : file.truncated ? 'diff가 20,000줄을 초과합니다.' : '표시할 hunk 없음'}${file.panelTruncated ? raw('<div style="margin-top:6px"><button type="button" class="btn primary small" id="loadFile">이 파일 불러오기</button></div>') : ''}</div>`)
     host.innerHTML = parts.join('')
+    host.querySelector('#loadFile')?.addEventListener('click', () => act(() => send({ op: 'view', sessionId: s.id, route: ROUTE, file: file.path, scroll: 0, loadFile: true })))
     return
   }
   const rows = []

@@ -15,7 +15,7 @@ import { buildPrompt, selectRunnableThreads } from './lib/prompt.mjs'
 import { parseUnifiedDiff } from './lib/diff-parser.mjs'
 import { execCommand } from './lib/exec.mjs'
 import { enrichPath, resolveBin } from './lib/bins.mjs'
-import { PanelPublisher, trimFilesForPanel, PANEL_LOG_TAIL_BYTES } from './lib/panel-publisher.mjs'
+import { PanelPublisher, trimFilesForPanel, fitSessionsToBudget, PANEL_LOG_TAIL_BYTES, PANEL_DATA_MAX_BYTES } from './lib/panel-publisher.mjs'
 import { validateOp } from './lib/bridge-ops.mjs'
 
 export const PROTOCOL_VERSION = 1
@@ -282,7 +282,7 @@ export function createServer({
       launcher: join(homeDir, 'bin', 'open-review'),
       agents: runs.availability(),
       worktrees,
-      sessions,
+      sessions: fitSessionsToBudget(sessions, viewState, { budgetBytes: Math.floor(PANEL_DATA_MAX_BYTES * 0.6) }),
       sessionList,
       runs: runsBySession,
       overview: { repos: lastOverview.repos, github: lastOverview.github },
@@ -296,7 +296,9 @@ export function createServer({
     switch (op.op) {
       case 'ping': return { ok: true }
       case 'view': {
+        const previous = viewState[op.sessionId]
         viewState[op.sessionId] = { route: op.route ?? 'review', file: op.file ?? null, scroll: Number.isFinite(op.scroll) ? op.scroll : 0 }
+        if (op.file && op.file !== previous?.file && op.loadFile) publishPanel('view-file')
         return { ok: true }
       }
       case 'session.open': {
