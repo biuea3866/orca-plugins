@@ -32,7 +32,7 @@ function parseArgs(argv) {
     else if (argument === '--bridge') options.bridge = true
     else if (argument === '--target') options.target = argv[++index] ?? null
     else if (argument === '--print-url') options.printOnly = true
-    else if (argument === '--panel-terminal') index += 1
+    else if (argument === '--panel-terminal' || argument === '--diag') index += 1
   }
   return options
 }

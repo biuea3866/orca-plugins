@@ -335,7 +335,8 @@ function bindBridgePicker() {
     const terminalId = picker.value
     if (!terminalId) return
     UI.picker = terminalId
-    const text = '"' + (DATA.launcher || '$HOME/Library/Application Support/OrcaLocalSelfReview/bin/open-review') + '" --bridge --panel-terminal ' + terminalId
+    const diag = btoa(unescape(encodeURIComponent(JSON.stringify({ generatedAt: DATA.generatedAt, reason: DATA.reason, context: CONTEXT, active: ACTIVE_WORKTREE && { path: ACTIVE_WORKTREE.path, sessionId: ACTIVE_WORKTREE.sessionId, bridgeIds: ACTIVE_WORKTREE.bridgeTerminalIds, terminalIds: ACTIVE_WORKTREE.terminalIds }, route: ROUTE })))).slice(0, 2500)
+    const text = '"' + (DATA.launcher || '$HOME/Library/Application Support/OrcaLocalSelfReview/bin/open-review') + '" --bridge --panel-terminal ' + terminalId + ' --diag ' + diag
     try {
       const result = await hostCall('terminal.sendText', { terminalId, text, enter: true })
       notice(result?.accepted ? '브리지를 시작했습니다. 몇 초 뒤 패널이 갱신됩니다.' : '터미널이 입력을 받지 않았습니다.', !result?.accepted)
