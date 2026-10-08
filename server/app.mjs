@@ -17,6 +17,8 @@ import { execCommand } from './lib/exec.mjs'
 import { enrichPath, resolveBin } from './lib/bins.mjs'
 import { PanelPublisher, trimFilesForPanel, fitSessionsToBudget, PANEL_LOG_TAIL_BYTES, PANEL_DATA_MAX_BYTES } from './lib/panel-publisher.mjs'
 import { validateOp } from './lib/bridge-ops.mjs'
+import { BridgeKeeper } from './lib/bridge-keeper.mjs'
+import { installLauncher } from '../worker/launcher-lib.mjs'
 
 export const PROTOCOL_VERSION = 1
 const CONTENT_TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.json': 'application/json; charset=utf-8' }
@@ -61,7 +63,8 @@ export function createServer({
   enrichEnvironment = true,
   exitImpl = (code) => process.exit(code),
   panelDebounceMs = 150,
-  panelRoot = pluginRoot
+  panelRoot = pluginRoot,
+  bridgeMaintenanceMs = 60_000
 }) {
   if (enrichEnvironment) enrichPath(process.env)
   mkdirSync(homeDir, { recursive: true, mode: 0o700 })
@@ -84,6 +87,10 @@ export function createServer({
   const viewState = {}                                 // sessionId → { route, file, scroll }
   let lastOverview = null
   let runPollTimer = null
+  const launcherPath = join(homeDir, 'bin', 'open-review')
+  try { installLauncher({ homeDir, pluginRoot }) } catch { /* the worker installs it too */ }
+  const bridgeKeeper = new BridgeKeeper({ exec, orcaBinary: orca.orcaBinary, launcherPath, log: (message) => process.stderr.write(`${message}\n`) })
+  let bridgeTimer = null
   const publisher = new PanelPublisher({ pluginRoot, outputRoot: panelRoot, debounceMs: panelDebounceMs, collect: collectPanelData, log: (message) => process.stderr.write(`${message}\n`) })
   let lastActivity = Date.now()
   let idleTimer = null
@@ -243,6 +250,29 @@ export function createServer({
     runPollTimer.unref?.()
   }
 
+  /** Makes sure every worktree with an active local session has a live bridge terminal. */
+  async function maintainBridges({ worktreePath = null } = {}) {
+    const targets = worktreePath ? [worktreePath] : [...new Set(store.listSessions().filter((session) => session.kind === 'local' && session.status !== 'completed' && session.repoPath && existsSync(session.repoPath)).map((session) => session.repoPath))]
+    let changed = false
+    for (const path of targets) {
+      const registered = bridges[path]?.terminalIds ?? []
+      const result = await bridgeKeeper.ensure(path, registered)
+      if (result.alive && registered.length && result.alive.length !== registered.length) {
+        bridges[path] = { terminalIds: result.alive, registeredAt: now() }
+        if (result.alive.length === 0) delete bridges[path]
+        saveBridges()
+        changed = true
+      }
+    }
+    if (changed) publishPanel('bridge')
+  }
+
+  function scheduleBridgeMaintenance() {
+    if (!bridgeMaintenanceMs || bridgeTimer) return
+    bridgeTimer = setInterval(() => { maintainBridges().catch(() => {}) }, bridgeMaintenanceMs)
+    bridgeTimer.unref?.()
+  }
+
   async function collectPanelData(reason) {
     const sessions = {}
     const sessionList = store.listSessions()
@@ -305,6 +335,7 @@ export function createServer({
         const session = await createSession({ kind: 'local', repoPath: op.worktreePath, baseRef: op.baseRef, agent: op.agent })
         viewState[session.id] = viewState[session.id] ?? { route: 'review', file: null, scroll: 0 }
         publishPanel('session')
+        if (bridgeMaintenanceMs) maintainBridges({ worktreePath: session.repoPath }).catch(() => {})
         return session
       }
       case 'session.patch': { const result = store.updateSession(op.sessionId, op); publishPanel('session'); return result }
@@ -500,12 +531,15 @@ export function createServer({
     scheduleIdleCheck()
     await publisher.flush('start')
     if (runs.hasRunning()) ensureRunPolling()
+    scheduleBridgeMaintenance()
+    if (bridgeMaintenanceMs) maintainBridges().catch(() => {})
     return port
   }
 
   async function close() {
     if (idleTimer) clearInterval(idleTimer)
     if (runPollTimer) clearInterval(runPollTimer)
+    if (bridgeTimer) clearInterval(bridgeTimer)
     removeRuntimeFile()
     if (!httpServer) return
     await new Promise((resolveClose) => { httpServer.closeAllConnections?.(); httpServer.close(() => resolveClose()) })
