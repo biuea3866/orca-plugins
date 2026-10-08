@@ -10,6 +10,7 @@ import {
   currentWorktreePath,
   defaultHomeDir,
   ensureServer,
+  installLauncher,
   openInOrcaTab,
   pluginRootFromModuleUrl
 } from './launcher-lib.mjs'
@@ -29,6 +30,7 @@ async function main() {
   const options = parseArgs(process.argv.slice(2))
   const homeDir = defaultHomeDir()
   const pluginRoot = pluginRootFromModuleUrl(import.meta.url)
+  try { installLauncher({ homeDir, pluginRoot }) } catch { /* best effort: the worker installs it too */ }
   const runtime = await ensureServer({ homeDir, serverEntry: join(pluginRoot, 'server', 'main.mjs') })
   const target = options.overview ? null : (options.target ?? (await currentWorktreePath({ cwd: process.cwd() })) ?? process.cwd())
   const url = buildOpenUrl({ port: runtime.port, target, overview: options.overview })
