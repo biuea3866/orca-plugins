@@ -47,6 +47,13 @@ export class PanelPublisher {
     return this.writing
   }
 
+  /** True when something else replaced the file on disk since we last published (e.g. a git checkout). */
+  isStale() {
+    if (this.lastHtml === null) return false
+    if (!existsSync(this.outputPath())) return true
+    try { return stableIdentity(readFileSync(this.outputPath(), 'utf8')) !== stableIdentity(this.lastHtml) } catch { return true }
+  }
+
   /** Waits until every scheduled/in-flight publish has been written. */
   async settle() {
     if (this.timer) { clearTimeout(this.timer); this.timer = null; await this.flush('settle') }

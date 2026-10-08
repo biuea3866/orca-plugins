@@ -65,7 +65,8 @@ export function createServer({
   panelDebounceMs = 150,
   panelRoot = pluginRoot,
   bridgeMaintenanceMs = 60_000,
-  runProgressMs = 10_000
+  runProgressMs = 10_000,
+  panelStaleCheckMs = 15_000
 }) {
   if (enrichEnvironment) enrichPath(process.env)
   mkdirSync(homeDir, { recursive: true, mode: 0o700 })
@@ -271,6 +272,14 @@ export function createServer({
       }
     }
     if (changed) publishPanel('bridge')
+  }
+
+  // Self-heal: a git checkout/commit in the plugin folder can replace panel.html with the committed baseline.
+  let staleTimer = null
+  function scheduleStaleCheck() {
+    if (!panelStaleCheckMs || staleTimer) return
+    staleTimer = setInterval(() => { if (publisher.isStale()) publishPanel('heal') }, panelStaleCheckMs)
+    staleTimer.unref?.()
   }
 
   function scheduleBridgeMaintenance() {
@@ -564,6 +573,7 @@ export function createServer({
     await publisher.flush('start')
     if (runs.hasRunning()) ensureRunPolling()
     scheduleBridgeMaintenance()
+    scheduleStaleCheck()
     if (bridgeMaintenanceMs) maintainBridges().catch(() => {})
     return port
   }
@@ -572,6 +582,7 @@ export function createServer({
     if (idleTimer) clearInterval(idleTimer)
     if (runPollTimer) clearInterval(runPollTimer)
     if (bridgeTimer) clearInterval(bridgeTimer)
+    if (staleTimer) clearInterval(staleTimer)
     removeRuntimeFile()
     if (!httpServer) return
     await new Promise((resolveClose) => { httpServer.closeAllConnections?.(); httpServer.close(() => resolveClose()) })
