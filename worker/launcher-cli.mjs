@@ -17,6 +17,7 @@ import {
   installLauncher,
   openInOrcaTab,
   pluginRootFromModuleUrl,
+  readRuntime,
   resolveOrcaBinary
 } from './launcher-lib.mjs'
 import { createLineBuffer, buildRegistration } from './bridge-reader.mjs'
@@ -37,9 +38,11 @@ function parseArgs(argv) {
 }
 
 async function apiCall(runtime, path, body) {
-  const response = await fetch(`http://127.0.0.1:${runtime.port}${path}`, {
+  // the server may have restarted (new port/token) since the bridge started: always use the latest runtime
+  const latest = readRuntime(defaultHomeDir()) ?? runtime
+  const response = await fetch(`http://127.0.0.1:${latest.port}${path}`, {
     method: 'POST',
-    headers: { 'X-SR-Token': runtime.token, 'Content-Type': 'application/json' },
+    headers: { 'X-SR-Token': latest.token, 'Content-Type': 'application/json' },
     body: JSON.stringify(body ?? {}),
     signal: AbortSignal.timeout(60_000)
   })
@@ -66,6 +69,7 @@ function clearScreen() {
 async function runBridge({ runtime, worktreePath, args }) {
   const registration = buildRegistration({ env: process.env, args, worktreePath, ptyId: await findPtyId(worktreePath) })
   await apiCall(runtime, '/api/bridge/register', registration)
+  let registeredPid = runtime.pid
   const assembler = new ChunkAssembler()
   let handled = 0
   let lastStatus = '대기 중'
@@ -89,7 +93,9 @@ async function runBridge({ runtime, worktreePath, args }) {
     if (parsed.kind === 'ignore') return
     if (parsed.kind === 'error') { lastStatus = `오류: ${parsed.error}`; render(); return }
     try {
-      await apiCall(runtime, '/api/bridge', parsed.op)
+      const live = await ensureServer({ homeDir: defaultHomeDir(), serverEntry: join(pluginRootFromModuleUrl(import.meta.url), 'server', 'main.mjs') })
+      if (live.pid !== registeredPid) { await apiCall(live, '/api/bridge/register', registration); registeredPid = live.pid }
+      await apiCall(live, '/api/bridge', parsed.op)
       handled += 1
       lastStatus = `${parsed.op.op} 성공 ${new Date().toLocaleTimeString()}`
     } catch (error) {

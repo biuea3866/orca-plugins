@@ -56,7 +56,7 @@ export function createServer({
   runners = { exec: execCommand },
   agentCommands,
   preferredPort = 47811,
-  idleMs = 15 * 60_000,
+  idleMs = 6 * 60 * 60_000,
   now = () => new Date().toISOString(),
   enrichEnvironment = true,
   exitImpl = (code) => process.exit(code),
