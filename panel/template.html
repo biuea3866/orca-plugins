@@ -94,7 +94,7 @@
 /*__INLINE:threads__*/
 
 // ------------------------------------------------------------------ data
-const TEMPLATE_VERSION = 'v6'
+const TEMPLATE_VERSION = 'v7'
 let DATA = JSON.parse(document.getElementById('orca-panel-data').textContent || '{}')
 const PREVIEW = window.parent === window                       // opened in a normal browser (server /panel-preview)
 const PREVIEW_TOKEN = document.querySelector('meta[name="sr-token"]')?.content ?? null
@@ -150,11 +150,17 @@ function encodeOp(op) {
   for (const byte of bytes) binary += String.fromCharCode(byte)
   return 'SR ' + btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
+// The host only lets a panel type into terminals of the FOCUSED worktree, so the bridge we use is
+// whichever registered bridge lives among the focused worktree's terminals — regardless of which
+// worktree the panel is currently showing (ops carry their own worktree/session ids).
 function bridgeTerminalId() {
-  if (!ACTIVE_WORKTREE || !CONTEXT) return null
-  const ids = new Set(ACTIVE_WORKTREE.bridgeTerminalIds || [])
-  const match = (CONTEXT.terminals || []).find((terminal) => ids.has(terminal.id))
-  return match ? match.id : null
+  if (!CONTEXT) return null
+  const focused = new Set((CONTEXT.terminals || []).map((terminal) => terminal.id))
+  for (const worktree of DATA.worktrees || []) {
+    const hit = (worktree.bridgeTerminalIds || []).find((id) => focused.has(id))
+    if (hit) return hit
+  }
+  return null
 }
 async function send(op, { silent = false } = {}) {
   if (PREVIEW && PREVIEW_TOKEN) {
