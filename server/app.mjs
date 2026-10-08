@@ -64,7 +64,8 @@ export function createServer({
   exitImpl = (code) => process.exit(code),
   panelDebounceMs = 150,
   panelRoot = pluginRoot,
-  bridgeMaintenanceMs = 60_000
+  bridgeMaintenanceMs = 60_000,
+  runProgressMs = 10_000
 }) {
   if (enrichEnvironment) enrichPath(process.env)
   mkdirSync(homeDir, { recursive: true, mode: 0o700 })
@@ -239,12 +240,16 @@ export function createServer({
   function runSignature() {
     return runs.list().map((run) => `${run.id}:${run.status}`).join(',')
   }
+  let lastProgressPublish = 0
   function ensureRunPolling() {
     if (runPollTimer) return
     lastRunSignature = runSignature()
+    lastProgressPublish = Date.now()
     runPollTimer = setInterval(() => {
       const signature = runSignature()
-      if (signature !== lastRunSignature) { lastRunSignature = signature; publishPanel('run-progress') }
+      const statusChanged = signature !== lastRunSignature
+      const progressDue = runProgressMs > 0 && Date.now() - lastProgressPublish >= runProgressMs && runs.hasRunning()
+      if (statusChanged || progressDue) { lastRunSignature = signature; lastProgressPublish = Date.now(); publishPanel('run-progress') }
       if (!runs.hasRunning()) { clearInterval(runPollTimer); runPollTimer = null }
     }, 2000)
     runPollTimer.unref?.()
