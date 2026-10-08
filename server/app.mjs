@@ -280,9 +280,14 @@ export function createServer({
       if (summary.status === 'completed') continue
       try {
         const detail = await sessionDetail(summary.id)
-        sessions[summary.id] = { session: detail.session, diff: { ...detail.diff, files: trimFilesForPanel(detail.diff.files) } }
+        let baseCandidates = []
+        if (detail.session.kind === 'local' && detail.session.repoPath) { try { baseCandidates = await git.baseCandidates(detail.session.repoPath) } catch { baseCandidates = [] } }
+        sessions[summary.id] = { session: detail.session, diff: { ...detail.diff, files: trimFilesForPanel(detail.diff.files) }, baseCandidates }
       } catch (error) {
-        sessions[summary.id] = { session: store.getSession(summary.id), diff: { files: [], error: error.message } }
+        let baseCandidates = []
+        const session = store.getSession(summary.id)
+        if (session.kind === 'local' && session.repoPath) { try { baseCandidates = await git.baseCandidates(session.repoPath) } catch { baseCandidates = [] } }
+        sessions[summary.id] = { session, diff: { files: [], error: error.message }, baseCandidates }
       }
     }
     const runList = runs.list()

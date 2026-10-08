@@ -65,10 +65,13 @@ export class GitReader {
   }
 
   async workingTreeDiff(cwd, { baseRef, includeUntracked }) {
-    const mergeBaseSha = await this.mergeBase(cwd, baseRef)
     const headSha = await this.headSha(cwd)
     const baseSha = (await this.run(cwd, ['rev-parse', baseRef])).stdout.trim()
-    const diff = await this.run(cwd, ['diff', '--no-color', '--no-ext-diff', '--find-renames', mergeBaseSha, '--'])
+    // No common ancestor (orphan/squashed snapshot branches): compare the working tree against the base itself.
+    let mergeBaseSha = null
+    let noMergeBase = false
+    try { mergeBaseSha = await this.mergeBase(cwd, baseRef) } catch (error) { if (!(error instanceof ApiError)) throw error; noMergeBase = true }
+    const diff = await this.run(cwd, ['diff', '--no-color', '--no-ext-diff', '--find-renames', mergeBaseSha ?? baseSha, '--'])
     const files = parseUnifiedDiff(diff.stdout)
     if (includeUntracked) {
       for (const file of await this.untrackedFiles(cwd)) {
@@ -77,7 +80,7 @@ export class GitReader {
         files.push(...parseUnifiedDiff(untracked.stdout, { changeType: 'untracked' }).map((entry) => ({ ...entry, path: file })))
       }
     }
-    return { files, baseSha, headSha, mergeBaseSha, computedAt: new Date().toISOString() }
+    return { files, baseSha, headSha, mergeBaseSha, noMergeBase, computedAt: new Date().toISOString() }
   }
 
   async porcelainStatus(cwd) {
