@@ -24,7 +24,7 @@
       { "id": "stop-server", "title": "Self Review: 로컬 서버 종료", "context": "global" }
     ],
     "keybindings": [
-      { "command": "open-review", "key": "Mod+Alt+R", "when": "global" }
+      { "command": "open-review", "key": "Mod+Alt+R", "when": "worktree" }
     ]
   },
   "capabilities": [
