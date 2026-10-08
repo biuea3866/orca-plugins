@@ -149,7 +149,7 @@ function countByFile(threads) {
 
 
 // ------------------------------------------------------------------ data
-const TEMPLATE_VERSION = 'v8'
+const TEMPLATE_VERSION = 'v9'
 let DATA = JSON.parse(document.getElementById('orca-panel-data').textContent || '{}')
 const PREVIEW = window.parent === window                       // opened in a normal browser (server /panel-preview)
 const PREVIEW_TOKEN = document.querySelector('meta[name="sr-token"]')?.content ?? null
@@ -356,6 +356,11 @@ function renderReview(session) {
   app.innerHTML = h`
     <div class="card" style="margin-top:8px"><div class="card-body">
       <div class="row">${raw(switcher)}<span class="badge">${s.status}</span><label class="small muted">base <select id="baseRef">${raw([...new Set([s.baseRef, ...(session.baseCandidates || [])])].map((candidate) => h`<option value="${candidate}" ${raw(candidate === s.baseRef ? 'selected' : '')}>${candidate}</option>`).join(''))}</select></label><span class="muted small">파일 ${files.length}</span>${diff.noMergeBase ? raw('<span class="badge warn" title="base 와 공통 조상이 없어 전체 비교로 표시합니다">공통 조상 없음</span>') : ''}${diff.error ? raw(h`<span class="badge warn">${diff.error}</span>`) : ''}</div>
+      <div class="row" style="margin-top:4px">
+        <label class="small muted"><input type="checkbox" id="workingTree" ${raw(s.includeWorkingTree ? 'checked' : '')}> 미커밋 변경 포함</label>
+        ${s.includeWorkingTree ? raw(h`<label class="small muted"><input type="checkbox" id="untracked" ${raw(s.includeUntracked ? 'checked' : '')}> untracked 포함</label>`) : ''}
+        <span class="muted small">${s.includeWorkingTree ? '작업 트리 기준' : 'PR 기준 (base…HEAD 커밋만)'}</span>
+      </div>
       <div class="row" style="margin-top:6px">
         <select id="agent">${raw(['claude', 'codex'].map((name) => h`<option value="${name}" ${raw(s.agent === name ? 'selected' : '')} ${raw(agents[name]?.available ? '' : 'disabled')}>${name}${agents[name]?.available ? '' : ' (없음)'}</option>`).join(''))}</select>
         <button type="button" class="btn primary" id="runFix" ${raw(canRun ? '' : 'disabled')} title="${!agents[s.agent]?.available ? s.agent + ' CLI 없음' : runnable === 0 ? '열려 있고 최신인 스레드 없음' : live ? '실행 중' : ''}">리뷰 완료 및 AI 수정 (${runnable})</button>
@@ -371,6 +376,8 @@ function renderReview(session) {
     <div id="filePanel"></div>`
   app.querySelector('#agent').addEventListener('change', (e) => act(() => send({ op: 'session.patch', sessionId: s.id, revision: s.revision, agent: e.target.value })))
   app.querySelector('#baseRef')?.addEventListener('change', (e) => act(() => send({ op: 'session.patch', sessionId: s.id, revision: s.revision, baseRef: e.target.value })))
+  app.querySelector('#workingTree')?.addEventListener('change', (e) => act(() => send({ op: 'session.patch', sessionId: s.id, revision: s.revision, includeWorkingTree: e.target.checked })))
+  app.querySelector('#untracked')?.addEventListener('change', (e) => act(() => send({ op: 'session.patch', sessionId: s.id, revision: s.revision, includeUntracked: e.target.checked })))
   app.querySelector('#runFix').addEventListener('click', () => act(() => send({ op: 'run.start', sessionId: s.id, revision: s.revision, agent: s.agent })))
   app.querySelector('#completeSession').addEventListener('click', () => { const open = s.threads.filter((t) => t.status === 'open').length; if (open === 0 || confirm(`열린 스레드가 ${open}개 남아 있습니다. 완료할까요?`)) act(() => send({ op: 'session.complete', sessionId: s.id })) })
   app.querySelector('#cancelRun')?.addEventListener('click', (e) => act(() => send({ op: 'run.cancel', runId: e.currentTarget.dataset.run })))

@@ -64,23 +64,30 @@ export class GitReader {
     return result.stdout.split('\0').filter(Boolean)
   }
 
-  async workingTreeDiff(cwd, { baseRef, includeUntracked }) {
+  /**
+   * PR-like by default: committed changes between the merge-base and HEAD. With
+   * includeWorkingTree the uncommitted working tree is compared instead, and
+   * includeUntracked adds untracked (never ignored) files on top of that.
+   */
+  async workingTreeDiff(cwd, { baseRef, includeUntracked = false, includeWorkingTree = false }) {
     const headSha = await this.headSha(cwd)
     const baseSha = (await this.run(cwd, ['rev-parse', baseRef])).stdout.trim()
     // No common ancestor (orphan/squashed snapshot branches): compare the working tree against the base itself.
     let mergeBaseSha = null
     let noMergeBase = false
     try { mergeBaseSha = await this.mergeBase(cwd, baseRef) } catch (error) { if (!(error instanceof ApiError)) throw error; noMergeBase = true }
-    const diff = await this.run(cwd, ['diff', '--no-color', '--no-ext-diff', '--find-renames', mergeBaseSha ?? baseSha, '--'])
+    const diffArgs = ['diff', '--no-color', '--no-ext-diff', '--find-renames', mergeBaseSha ?? baseSha]
+    if (!includeWorkingTree) diffArgs.push('HEAD')
+    const diff = await this.run(cwd, [...diffArgs, '--'])
     const files = parseUnifiedDiff(diff.stdout)
-    if (includeUntracked) {
+    if (includeWorkingTree && includeUntracked) {
       for (const file of await this.untrackedFiles(cwd)) {
         const untracked = await this.run(cwd, ['diff', '--no-color', '--no-ext-diff', '--no-index', '--', '/dev/null', file], { allowFailure: true })
         if (untracked.code > 1) continue
         files.push(...parseUnifiedDiff(untracked.stdout, { changeType: 'untracked' }).map((entry) => ({ ...entry, path: file })))
       }
     }
-    return { files, baseSha, headSha, mergeBaseSha, noMergeBase, computedAt: new Date().toISOString() }
+    return { files, baseSha, headSha, mergeBaseSha, noMergeBase, includeWorkingTree, includeUntracked, computedAt: new Date().toISOString() }
   }
 
   async porcelainStatus(cwd) {

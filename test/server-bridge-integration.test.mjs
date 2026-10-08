@@ -89,7 +89,7 @@ test('bridge unregister removes only the given terminal ids, keeping other live 
 })
 
 test('bridge ops create a session, add a thread, keep view state without regenerating, and open the wide view', async () => {
-  const opened = await api('POST', '/api/bridge', { op: 'session.open', worktreePath: repo })
+  const opened = await api('POST', '/api/bridge', { op: 'session.open', worktreePath: repo, includeWorkingTree: true })
   assert.equal(opened.status, 200)
   const sessionId = opened.body.result.id
   await server.settlePanel()

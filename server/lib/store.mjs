@@ -120,7 +120,8 @@ export class SessionStore {
       repoDisplayName: input.repoDisplayName ?? '',
       branch: input.branch ?? '',
       baseRef: input.baseRef,
-      includeUntracked: input.includeUntracked ?? true,
+      includeUntracked: input.includeUntracked ?? false,
+      includeWorkingTree: input.includeWorkingTree ?? false,
       pr: input.kind === 'pr' ? input.pr : null,
       agent: AGENTS.has(input.agent) ? input.agent : 'claude',
       status: 'reviewing',
@@ -143,6 +144,7 @@ export class SessionStore {
     const session = this.withRevision(sessionId, patch.revision)
     if (patch.baseRef !== undefined) session.baseRef = requireString(patch.baseRef, 'baseRef', { max: 512 })
     if (patch.includeUntracked !== undefined) session.includeUntracked = Boolean(patch.includeUntracked)
+    if (patch.includeWorkingTree !== undefined) session.includeWorkingTree = Boolean(patch.includeWorkingTree)
     if (patch.agent !== undefined) {
       if (!AGENTS.has(patch.agent)) throw new ApiError(400, 'invalid_field', 'agent must be claude or codex')
       session.agent = patch.agent

@@ -130,7 +130,7 @@ interface Hunk { header: string, oldStart: number, oldLines: number, newStart: n
 interface DiffLine { type: 'context' | 'add' | 'del', oldNo: number | null, newNo: number | null, text: string }
 ```
 
-로컬 diff 산출: `git merge-base <baseRef> HEAD` → `git diff <mergeBase>` (작업 트리 기준 → staged+unstaged 포함) + untracked(`git ls-files --others --exclude-standard` 각 파일을 `git diff --no-index /dev/null <file>`). PR diff 산출: `gh pr diff <n> --repo owner/repo` 결과 파싱(동일 파서).
+로컬 diff 산출: `git merge-base <baseRef> HEAD` → 기본(PR 기준) `git diff <mergeBase> HEAD` (커밋된 변경만). `includeWorkingTree` 가 켜지면 `git diff <mergeBase>` (작업 트리 기준 → staged+unstaged 포함), 거기에 `includeUntracked` 가 켜지면 untracked(`git ls-files --others --exclude-standard`, ignore 대상 제외) 각 파일을 `git diff --no-index /dev/null <file>` 로 추가. merge-base 가 없으면(고아 브랜치) base 자체와 비교하고 `noMergeBase` 를 표시. PR diff 산출: `gh pr diff <n> --repo owner/repo` 결과 파싱(동일 파서).
 
 ## 서버 API 계약 (모든 응답 JSON, 오류 `{ error: { code, message } }`)
 

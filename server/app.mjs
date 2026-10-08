@@ -134,7 +134,7 @@ export function createServer({
       return { files: parseUnifiedDiff(text), baseSha: null, headSha: session.pr.headSha, mergeBaseSha: null, computedAt: now() }
     }
     if (!session.repoPath || !existsSync(session.repoPath)) throw new ApiError(404, 'worktree_missing', `worktree ${session.repoPath} no longer exists`)
-    return git.workingTreeDiff(session.repoPath, { baseRef: session.baseRef, includeUntracked: session.includeUntracked })
+    return git.workingTreeDiff(session.repoPath, { baseRef: session.baseRef, includeUntracked: session.includeUntracked, includeWorkingTree: session.includeWorkingTree })
   }
 
   async function sessionDetail(sessionId) {
@@ -179,7 +179,7 @@ export function createServer({
       const baseRef = typeof body.baseRef === 'string' && body.baseRef ? body.baseRef : context.defaultBase
       if (!baseRef) throw new ApiError(400, 'no_base', 'no base branch candidate found; pass baseRef explicitly')
       if (!(await git.refExists(context.repoPath, baseRef))) throw new ApiError(400, 'git_failed', `base ref ${baseRef} does not exist`)
-      return store.createSession({ kind: 'local', repoPath: context.repoPath, baseRef, includeUntracked: body.includeUntracked, agent: body.agent, worktreeId: context.worktreeId, repoDisplayName: context.repoDisplayName, branch: context.branch })
+      return store.createSession({ kind: 'local', repoPath: context.repoPath, baseRef, includeUntracked: body.includeUntracked, includeWorkingTree: body.includeWorkingTree, agent: body.agent, worktreeId: context.worktreeId, repoDisplayName: context.repoDisplayName, branch: context.branch })
     }
     if (body.kind === 'pr') {
       const { owner, repo, number } = body
@@ -339,7 +339,7 @@ export function createServer({
         return { ok: true }
       }
       case 'session.open': {
-        const session = await createSession({ kind: 'local', repoPath: op.worktreePath, baseRef: op.baseRef, agent: op.agent })
+        const session = await createSession({ kind: 'local', repoPath: op.worktreePath, baseRef: op.baseRef, agent: op.agent, includeWorkingTree: op.includeWorkingTree, includeUntracked: op.includeUntracked })
         viewState[session.id] = viewState[session.id] ?? { route: 'review', file: null, scroll: 0 }
         publishPanel('session')
         if (bridgeMaintenanceMs) maintainBridges({ worktreePath: session.repoPath }).catch(() => {})

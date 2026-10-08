@@ -524,7 +524,8 @@ async function renderSession(sessionId) {
       </div>
       <span class="badge">${session.status}</span>
       ${session.kind === 'local' ? raw(h`<label>base <select id="baseRef">${raw((context?.baseCandidates ?? [session.baseRef]).map((candidate) => h`<option value="${candidate}" ${raw(candidate === session.baseRef ? 'selected' : '')}>${candidate}</option>`).join(''))}</select></label>
-      <label><input type="checkbox" id="untracked" ${raw(session.includeUntracked ? 'checked' : '')}> untracked 포함</label>`) : ''}
+      <label><input type="checkbox" id="workingTree" ${raw(session.includeWorkingTree ? 'checked' : '')}> 미커밋 변경 포함</label>
+      ${session.includeWorkingTree ? raw(h`<label><input type="checkbox" id="untracked" ${raw(session.includeUntracked ? 'checked' : '')}> untracked 포함</label>`) : ''}`) : ''}
       <span class="spacer"></span>
       <label>에이전트 <select id="agent">${raw(agentOptions)}</select></label>
       <button type="button" class="btn" id="refreshDiff" title="diff 다시 계산">diff 새로고침</button>
@@ -533,6 +534,7 @@ async function renderSession(sessionId) {
       <span class="muted small">거터 드래그/Shift+클릭으로 멀티라인 선택 · <span class="kbd">Enter</span> 1줄 · <span class="kbd">Shift+↑↓</span> 확장</span>`
     headEl.querySelector('#baseRef')?.addEventListener('change', async (event) => { await mutate(() => api.patch(`/api/sessions/${session.id}`, { revision: session.revision, baseRef: event.target.value })); await reload() })
     headEl.querySelector('#untracked')?.addEventListener('change', async (event) => { await mutate(() => api.patch(`/api/sessions/${session.id}`, { revision: session.revision, includeUntracked: event.target.checked })); await reload() })
+    headEl.querySelector('#workingTree')?.addEventListener('change', async (event) => { await mutate(() => api.patch(`/api/sessions/${session.id}`, { revision: session.revision, includeWorkingTree: event.target.checked })); await reload() })
     headEl.querySelector('#agent').addEventListener('change', (event) => mutate(() => api.patch(`/api/sessions/${session.id}`, { revision: session.revision, agent: event.target.value })))
     headEl.querySelector('#refreshDiff').addEventListener('click', () => reload())
     headEl.querySelector('#complete')?.addEventListener('click', async () => {

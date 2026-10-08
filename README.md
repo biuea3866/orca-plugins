@@ -1,4 +1,32 @@
-# Local Self Review — Orca 플러그인
+# Orca Plugins
+
+개인 컴퓨터들에서 함께 사용하는 Orca 플러그인 저장소입니다.
+
+| 플러그인 | 개발 플러그인 등록 위치 | 설치 안내 |
+|---|---|---|
+| Local Self Review | 이 저장소 루트의 절대 경로 | 아래 설치 절차 |
+| Orca 세션 대시보드 | 설치 후 출력되는 `~/.orca/session-dashboard/plugin`의 절대 경로 | [대시보드 설치 안내](./session-dashboard/README.md) |
+
+## 다른 Mac에서 설치
+
+macOS에 Orca, Git, Node.js 20 이상, Python 3.10 이상과 Orca CLI를 준비합니다. Self Review의 PR 조회에는 로그인된 `gh`, AI 수정에는 로그인된 `claude` 또는 `codex` CLI가 필요합니다.
+
+```sh
+git clone https://github.com/biuea3866/orca-plugins.git
+cd orca-plugins
+node scripts/build-panel.mjs
+python3 session-dashboard/install.py
+```
+
+Orca → Settings → Plugins에서 플러그인 시스템을 켜고 Development에 위 표의 두 경로를 각각 추가해 활성화합니다. Self Review는 아래의 커맨드를 한 번 실행하고, 대시보드는 우측 패널의 세션 대시보드 탭을 엽니다. 런타임 패키지 설치나 `npm install`은 필요하지 않습니다.
+
+기본 Orca에서는 대시보드 데이터 갱신 시 상세 화면과 스크롤이 초기화됩니다. 스크롤 유지와 터미널 이동은 Orca 1.4.222용 로컬 호스트 수정을 적용해야 합니다. 자세한 절차는 [대시보드 설치 안내](./session-dashboard/README.md)를 따릅니다.
+
+다른 컴퓨터에서는 그 컴퓨터에 등록된 프로젝트와 세션을 읽습니다. 기존 리뷰 기록은 현재 컴퓨터의 `~/Library/Application Support/OrcaLocalSelfReview/`에 저장되며 Git으로 동기화하지 않습니다.
+
+업데이트는 Self Review 서버를 종료한 뒤 `git pull --ff-only`를 실행합니다. 런타임에 생성된 `panel.html`이 변경되어 pull이 막히면 `node scripts/build-panel.mjs`로 기준 문서를 다시 생성합니다. 대시보드는 설치 명령을 다시 실행해 로그인 서비스를 갱신합니다.
+
+## Local Self Review
 
 PR을 올리기 **전에** 사람이 직접 하는 셀프 리뷰 도구. GitHub PR 화면처럼 diff를 읽고, 라인 번호를 **드래그해 멀티라인 코멘트**를 남기고, "리뷰 완료 및 AI 수정" 버튼으로 **Claude 또는 Codex** 가 코멘트대로 코드를 고치게 한 뒤 다시 검토한다. 등록된 모든 레포의 **draft/open PR 목록과 상세**도 한 화면에서 본다.
 
@@ -35,7 +63,7 @@ PR을 올리기 **전에** 사람이 직접 하는 셀프 리뷰 도구. GitHub 
 
 ## 사용 흐름
 
-1. 패널 "리뷰" 탭: 현재 worktree 세션(기본 base = `origin/HEAD`, 미커밋·untracked 포함). 없으면 "리뷰 세션 시작".
+1. 패널 "리뷰" 탭: 현재 worktree 세션. 기본은 **PR 기준**(base…HEAD 커밋된 변경만, 실제 PR에 올라갈 파일과 동일). "미커밋 변경 포함"을 켜면 작업 트리 기준으로, 그 아래 "untracked 포함"으로 새 파일까지 본다. gitignore 대상은 어느 모드에서도 보이지 않는다.
 2. 파일을 고르고, 라인 번호 거터를 드래그(또는 Shift+클릭, 키보드 Enter/Shift+↑↓) → 코멘트 작성. 같은 파일·같은 side 안에서 최대 200줄. 코멘트는 브리지 터미널을 거쳐 저장되고 패널이 곧 갱신된다.
 3. 에이전트(claude/codex) 선택 → **리뷰 완료 및 AI 수정** → 열린 코멘트가 프롬프트로 변환돼 헤드리스 실행. 상태·변경 파일·로그는 패널의 "AI 수정" 카드에, 전체 로그는 "넓게"에서.
 4. 완료 후 스레드별로 직접 resolve. (AI 성공만으로 자동 resolve 되지 않는다.)
