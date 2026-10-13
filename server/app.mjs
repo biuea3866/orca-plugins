@@ -10,6 +10,7 @@ import { GitReader, readRepoFileLines } from './lib/git.mjs'
 import { OrcaReader } from './lib/orca.mjs'
 import { GitHubReader, parseGitHubRemote } from './lib/github.mjs'
 import { branchCards } from './lib/branches.mjs'
+import { discoverSiblingClones } from './lib/clones.mjs'
 import { RunManager, defaultAgentCommands, pickRunToShow, filterIgnoredChanges } from './lib/runs.mjs'
 import { annotateThreads } from './lib/anchor.mjs'
 import { buildPrompt, selectRunnableThreads } from './lib/prompt.mjs'
@@ -107,6 +108,18 @@ export function createServer({
     return orca.inventory()
   }
 
+  // Scanning the parent dir costs two git calls per checkout, so keep the result for a minute (refresh bypasses it).
+  const CLONE_SCAN_TTL_MS = 60_000
+  let cloneScan = { key: '', at: 0, value: [] }
+  async function siblingClones({ repos, worktrees, force }) {
+    const key = [...repos.map((repo) => repo.path), '|', ...worktrees.map((worktree) => worktree.path)].sort().join('\n')
+    if (!force && cloneScan.key === key && Date.now() - cloneScan.at < CLONE_SCAN_TTL_MS) return cloneScan.value
+    let value = []
+    try { value = await discoverSiblingClones({ repos, worktrees, git }) } catch { value = [] }
+    cloneScan = { key, at: Date.now(), value }
+    return value
+  }
+
   async function findWorktree(path) {
     const { worktrees, repos } = await inventory()
     const normalized = resolve(path)
@@ -149,7 +162,8 @@ export function createServer({
   }
 
   async function overview({ force = false } = {}) {
-    const { repos, worktrees, error } = await inventory()
+    const { repos, worktrees: registeredWorktrees, error } = await inventory()
+    const worktrees = [...registeredWorktrees, ...(await siblingClones({ repos, worktrees: registeredWorktrees, force }))]
     const errors = []
     if (error) errors.push({ repo: '(orca)', message: error })
     let lastFetchedAt = null
@@ -172,7 +186,7 @@ export function createServer({
         path: repo.path,
         displayName: repo.displayName,
         github: target,
-        worktrees: worktrees.filter((entry) => entry.repoId === repo.id).map((entry) => ({ worktreeId: entry.id, path: entry.path, branch: entry.branch, displayName: entry.displayName })),
+        worktrees: worktrees.filter((entry) => entry.repoId === repo.id).map((entry) => ({ worktreeId: entry.id, path: entry.path, branch: entry.branch, displayName: entry.displayName, ...(entry.unregistered ? { unregistered: true } : {}) })),
         prs,
         branches
       })
@@ -335,6 +349,7 @@ export function createServer({
       path: worktree.path,
       branch: worktree.branch,
       displayName: worktree.displayName,
+      unregistered: worktree.unregistered === true,
       repoDisplayName: repo.displayName,
       sessionId: sessionList.find((session) => session.kind === 'local' && session.status !== 'completed' && session.repoPath === worktree.path)?.id ?? null,
       bridgeTerminalIds: bridges[worktree.path]?.terminalIds ?? []

@@ -102,7 +102,7 @@
 /*__INLINE:threads__*/
 
 // ------------------------------------------------------------------ data
-const TEMPLATE_VERSION = 'v18'
+const TEMPLATE_VERSION = 'v19'
 let DATA = JSON.parse(document.getElementById('orca-panel-data').textContent || '{}')
 const PREVIEW = window.parent === window                       // opened in a normal browser (server /panel-preview)
 const PREVIEW_TOKEN = document.querySelector('meta[name="sr-token"]')?.content ?? null
@@ -334,7 +334,7 @@ function renderOverview() {
   const branchRows = overview.repos.flatMap((repo) => (repo.branches || []).map((branch) => ({ repo, branch }))).filter(({ repo }) => !repoFilter || repo.id === repoFilter).sort((a, b) => String(b.branch.committedDate).localeCompare(String(a.branch.committedDate)))
   app.innerHTML = h`
     <div class="card"><div class="card-head">worktree</div><div class="card-body">
-      ${raw((DATA.worktrees || []).length === 0 ? '<div class="muted">Orca에 등록된 worktree가 없습니다.</div>' : (DATA.worktrees || []).map((w) => h`<div class="list-item"><span class="grow"><strong>${w.repoDisplayName}</strong> <span class="mono">${w.branch}</span>${w.sessionId ? raw(' <span class="badge">세션</span>') : ''}${(w.bridgeTerminalIds || []).length ? raw(' <span class="badge">브리지</span>') : ''}</span><button type="button" class="btn small" data-open-worktree="${w.path}">${w.sessionId ? '열기' : '리뷰 시작'}</button></div>`).join(''))}
+      ${raw((DATA.worktrees || []).length === 0 ? '<div class="muted">Orca에 등록된 worktree가 없습니다.</div>' : (DATA.worktrees || []).map((w) => h`<div class="list-item"><span class="grow"><strong>${w.repoDisplayName}</strong> <span class="mono">${w.branch}</span>${w.sessionId ? raw(' <span class="badge">세션</span>') : ''}${w.unregistered ? raw(' <span class="badge warn" title="Orca 에 등록되지 않은 별도 클론입니다. 리뷰는 되지만 Orca 터미널 브리지와 연결되지 않습니다.">Orca 미등록</span>') : ''}${(w.bridgeTerminalIds || []).length ? raw(' <span class="badge">브리지</span>') : ''}</span><button type="button" class="btn small" data-open-worktree="${w.path}">${w.sessionId ? '열기' : '리뷰 시작'}</button></div>`).join(''))}
     </div></div>
     <div class="card"><div class="card-head">로컬 세션 <span class="muted small">${sessions.length}</span></div><div class="card-body">
       ${raw(sessions.length === 0 ? '<div class="muted">아직 세션이 없습니다.</div>' : sessions.map((s) => h`<div class="list-item"><span class="grow"><strong>${s.repoDisplayName}</strong> <span class="mono">${s.branch}</span> <span class="badge">${s.status}</span> <span class="muted small">open ${s.threads.open} · resolved ${s.threads.resolved}</span></span>${s.status !== 'completed' ? raw(h`<button type="button" class="btn small" data-open-session="${s.id}">열기</button>`) : ''}<button type="button" class="btn small danger" data-delete-session="${s.id}">삭제</button></div>`).join(''))}
@@ -427,7 +427,7 @@ function renderReview(session) {
 
 function worktreeSwitcherHtml() {
   const worktrees = DATA.worktrees || []
-  return h`<select id="worktreeSwitch" title="worktree 선택">${raw(worktrees.map((w) => h`<option value="${w.path}" ${raw(ACTIVE_WORKTREE && w.path === ACTIVE_WORKTREE.path ? 'selected' : '')}>${w.repoDisplayName} · ${w.branch}${w.sessionId ? ' ●' : ''}</option>`).join(''))}</select>`
+  return h`<select id="worktreeSwitch" title="worktree 선택">${raw(worktrees.map((w) => h`<option value="${w.path}" ${raw(ACTIVE_WORKTREE && w.path === ACTIVE_WORKTREE.path ? 'selected' : '')}>${w.repoDisplayName} · ${w.branch}${w.sessionId ? ' ●' : ''}${w.unregistered ? ' · Orca 미등록' : ''}</option>`).join(''))}</select>`
 }
 function bindWorktreeSwitcher() {
   app.querySelector('#worktreeSwitch')?.addEventListener('change', (event) => {

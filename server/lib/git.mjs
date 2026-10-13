@@ -34,6 +34,12 @@ export class GitReader {
     return result.stdout.trim()
   }
 
+  /** origin URL of a checkout, or '' when it has none. */
+  async remoteUrl(cwd) {
+    const result = await this.run(cwd, ['remote', 'get-url', 'origin'], { allowFailure: true })
+    return result.code === 0 ? result.stdout.trim() : ''
+  }
+
   async refExists(cwd, ref) {
     const result = await this.run(cwd, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { allowFailure: true })
     return result.code === 0
