@@ -101,9 +101,10 @@
 /*__INLINE:selection__*/
 /*__INLINE:threads__*/
 /*__INLINE:confirm__*/
+/*__INLINE:pin__*/
 
 // ------------------------------------------------------------------ data
-const TEMPLATE_VERSION = 'v20'
+const TEMPLATE_VERSION = 'v21'
 let DATA = JSON.parse(document.getElementById('orca-panel-data').textContent || '{}')
 const PREVIEW = window.parent === window                       // opened in a normal browser (server /panel-preview)
 const PREVIEW_TOKEN = document.querySelector('meta[name="sr-token"]')?.content ?? null
@@ -182,7 +183,7 @@ async function send(op, { silent = false } = {}) {
     const response = await fetch('/api/bridge', { method: 'POST', headers: { 'X-SR-Token': PREVIEW_TOKEN, 'Content-Type': 'application/json' }, body: JSON.stringify(op) })
     const payload = await response.json().catch(() => null)
     if (!response.ok) throw new Error(payload?.error?.message || ('HTTP ' + response.status))
-    if (op.op !== 'view' || op.loadFile) await previewReload()
+    if ((op.op !== 'view' && op.op !== 'worktree.pin') || op.loadFile) await previewReload()
     return payload?.result
   }
   const terminalId = bridgeTerminalId()
@@ -241,6 +242,8 @@ function hasUnsentWork() { return Boolean(UI.pendingForm || UI.selection || UI.d
 function pickWorktree({ allowAutoSwitch = true } = {}) {
   const worktrees = DATA.worktrees || []
   const focused = matchFocusedWorktree()
+  // A remounted iframe starts empty: take back the hand-picked worktree the server remembered (once, so a later unpin sticks).
+  if (!UI.pinRestored) { UI.pinRestored = true; if (!UI.manualWorktree) UI.manualWorktree = restorePinned(DATA.pinnedWorktree, worktrees) }
   if (UI.manualWorktree) {
     ACTIVE_WORKTREE = worktrees.find((w) => w.path === UI.manualWorktree) || ACTIVE_WORKTREE || focused
   } else if (!ACTIVE_WORKTREE || (allowAutoSwitch && !hasUnsentWork())) {
@@ -295,8 +298,8 @@ function render({ keepScroll = false } = {}) {
     if (UI.focusCandidate && ROUTE === 'review') {
       banner.hidden = false
       banner.innerHTML = h`포커스된 worktree 는 <b>${UI.focusCandidate.repoDisplayName} · ${UI.focusCandidate.branch}</b> 입니다. <button type="button" class="btn small" id="switchToFocused">그 worktree 로 전환</button>${UI.manualWorktree ? raw(' <button type="button" class="btn ghost small" id="unpinWorktree">고정 해제</button>') : ''}`
-      banner.querySelector('#switchToFocused').addEventListener('click', () => { UI.manualWorktree = null; UI.selection = null; UI.pendingForm = false; UI.draft = ''; ACTIVE_WORKTREE = UI.focusCandidate; UI.focusCandidate = null; UI.file = null; render() })
-      banner.querySelector('#unpinWorktree')?.addEventListener('click', () => { UI.manualWorktree = null; pickWorktree(); render() })
+      banner.querySelector('#switchToFocused').addEventListener('click', () => { UI.manualWorktree = null; sendPin(null); UI.selection = null; UI.pendingForm = false; UI.draft = ''; ACTIVE_WORKTREE = UI.focusCandidate; UI.focusCandidate = null; UI.file = null; render() })
+      banner.querySelector('#unpinWorktree')?.addEventListener('click', () => { UI.manualWorktree = null; sendPin(null); pickWorktree(); render() })
     } else banner.hidden = true
   }
   const session = activeSession()
@@ -351,8 +354,8 @@ function renderOverview() {
     </div></div>`
   app.querySelector('#repoFilter').addEventListener('change', (e) => { UI.repoFilter = e.target.value; renderOverview() })
   app.querySelector('#draftOnly').addEventListener('change', (e) => { UI.draftOnly = e.target.checked; renderOverview() })
-  for (const button of app.querySelectorAll('[data-open-worktree]')) button.addEventListener('click', () => { UI.manualWorktree = button.dataset.openWorktree; UI.manualContextKey = contextKey(); ACTIVE_WORKTREE = (DATA.worktrees || []).find((w) => w.path === UI.manualWorktree) || null; ROUTE = 'review'; UI.file = null; if (ACTIVE_WORKTREE && !ACTIVE_WORKTREE.sessionId) act(() => send({ op: 'session.open', worktreePath: UI.manualWorktree })); render() })
-  for (const button of app.querySelectorAll('[data-open-session]')) button.addEventListener('click', () => { const s = (DATA.sessionList || []).find((x) => x.id === button.dataset.openSession); UI.manualWorktree = s?.repoPath || null; UI.manualContextKey = contextKey(); ACTIVE_WORKTREE = (DATA.worktrees || []).find((w) => w.path === UI.manualWorktree) || { path: s.repoPath, branch: s.branch, displayName: s.branch, repoDisplayName: s.repoDisplayName, sessionId: s.id, bridgeTerminalIds: [] }; ROUTE = 'review'; UI.file = null; render() })
+  for (const button of app.querySelectorAll('[data-open-worktree]')) button.addEventListener('click', () => { UI.manualWorktree = button.dataset.openWorktree; UI.manualContextKey = contextKey(); sendPin(UI.manualWorktree); ACTIVE_WORKTREE = (DATA.worktrees || []).find((w) => w.path === UI.manualWorktree) || null; ROUTE = 'review'; UI.file = null; if (ACTIVE_WORKTREE && !ACTIVE_WORKTREE.sessionId) act(() => send({ op: 'session.open', worktreePath: UI.manualWorktree })); render() })
+  for (const button of app.querySelectorAll('[data-open-session]')) button.addEventListener('click', () => { const s = (DATA.sessionList || []).find((x) => x.id === button.dataset.openSession); UI.manualWorktree = s?.repoPath || null; UI.manualContextKey = contextKey(); sendPin(UI.manualWorktree); ACTIVE_WORKTREE = (DATA.worktrees || []).find((w) => w.path === UI.manualWorktree) || { path: s.repoPath, branch: s.branch, displayName: s.branch, repoDisplayName: s.repoDisplayName, sessionId: s.id, bridgeTerminalIds: [] }; ROUTE = 'review'; UI.file = null; render() })
   for (const button of app.querySelectorAll('[data-delete-session]')) button.addEventListener('click', () => { if (armConfirm(button, { message: '세션과 코멘트를 삭제할까요? (로컬에서만) 한 번 더 누르면 삭제됩니다' }) === 'confirmed') act(() => send({ op: 'session.delete', sessionId: button.dataset.deleteSession })) })
 }
 
@@ -434,6 +437,7 @@ function bindWorktreeSwitcher() {
   app.querySelector('#worktreeSwitch')?.addEventListener('change', (event) => {
     UI.manualWorktree = event.target.value
     UI.manualContextKey = contextKey()
+    sendPin(UI.manualWorktree)
     ACTIVE_WORKTREE = (DATA.worktrees || []).find((w) => w.path === UI.manualWorktree) || ACTIVE_WORKTREE
     UI.file = null; UI.selection = null; UI.pendingForm = false
     render()
@@ -757,6 +761,12 @@ function restoreDraft() {
   for (const el of document.querySelectorAll('[data-reply-text]')) if (UI.drafts[el.dataset.replyText]) el.value = UI.drafts[el.dataset.replyText]
 }
 let viewTimer = null
+// Remember (or forget) the hand-picked worktree on the server so it survives the iframe being remounted.
+// Best effort: without a bridge terminal there is nowhere to send it, and that must not pop the bridge picker.
+function sendPin(worktreePath) {
+  if (!PREVIEW && !bridgeTerminalId()) return
+  send({ op: 'worktree.pin', worktreePath }, { silent: true }).catch(() => {})
+}
 function sendView(sessionId) {
   if (!sessionId) return
   clearTimeout(viewTimer)

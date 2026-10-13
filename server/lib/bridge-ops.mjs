@@ -11,7 +11,7 @@ export const BRIDGE_OPS = [
   'thread.add', 'thread.patch', 'thread.delete',
   'comment.add', 'comment.patch', 'comment.delete',
   'run.start', 'run.cancel',
-  'overview.refresh', 'view', 'wide', 'ping'
+  'overview.refresh', 'view', 'wide', 'ping', 'worktree.pin'
 ]
 
 export function encodeBridgeLine(op) {
@@ -93,6 +93,8 @@ export function validateOp(op) {
       return requireString(op.runId, 64) ? { ok: true } : fail('runId required')
     case 'view':
       return requireSession(op) ? { ok: true } : fail('sessionId required')
+    case 'worktree.pin':
+      return op.worktreePath === null || requireString(op.worktreePath, 4096) ? { ok: true } : fail('worktreePath must be a path or null')
     case 'overview.refresh':
     case 'ping':
       return { ok: true }

@@ -30,3 +30,12 @@ test('validateOp accepts every documented op and rejects unknown ops or missing 
   assert.equal(validateOp({ op: 'thread.add', sessionId: 'ses_000000000001' }).ok, false)
   assert.equal(validateOp({ op: 'run.start', sessionId: 'ses_000000000001', revision: 1, agent: 'gpt' }).ok, false)
 })
+
+test('worktree.pin takes a path to remember or null to forget, nothing else', () => {
+  assert.deepEqual(validateOp({ op: 'worktree.pin', worktreePath: '/repo' }), { ok: true })
+  assert.deepEqual(validateOp({ op: 'worktree.pin', worktreePath: null }), { ok: true })
+  assert.equal(validateOp({ op: 'worktree.pin', worktreePath: '' }).ok, false)
+  assert.equal(validateOp({ op: 'worktree.pin', worktreePath: 42 }).ok, false)
+  assert.equal(validateOp({ op: 'worktree.pin' }).ok, false)
+  assert.equal(validateOp({ op: 'worktree.pin', worktreePath: 'x'.repeat(5000) }).ok, false)
+})

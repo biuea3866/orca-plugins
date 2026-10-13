@@ -31,7 +31,7 @@ export class PanelPublisher {
 
   readModules() {
     const modules = {}
-    for (const name of ['selection', 'threads', 'confirm']) {
+    for (const name of ['selection', 'threads', 'confirm', 'pin']) {
       const path = join(this.pluginRoot, 'ui', 'lib', `${name}.mjs`)
       if (existsSync(path)) modules[name] = readFileSync(path, 'utf8')
     }

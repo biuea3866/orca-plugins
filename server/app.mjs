@@ -89,6 +89,7 @@ export function createServer({
   const startedAt = now()
   const bridgesPath = join(homeDir, 'runtime', 'bridges.json')
   const bridges = readBridges(bridgesPath)            // worktreePath → { terminalIds: string[], registeredAt }
+  let pinnedWorktree = null                            // worktree picked by hand: the panel iframe forgets it when remounted
   const viewState = {}                                 // sessionId → { route, file, scroll }
   let lastOverview = null
   let runPollTimer = null
@@ -366,6 +367,7 @@ export function createServer({
       sessionList,
       runs: runsBySession,
       overview: { repos: lastOverview.repos, github: lastOverview.github },
+      pinnedWorktree,
       viewState
     }
   }
@@ -379,6 +381,11 @@ export function createServer({
         const previous = viewState[op.sessionId]
         viewState[op.sessionId] = { route: op.route ?? 'review', file: op.file ?? null, scroll: Number.isFinite(op.scroll) ? op.scroll : 0 }
         if (op.file && op.file !== previous?.file && op.loadFile) publishPanel('view-file')
+        return { ok: true }
+      }
+      case 'worktree.pin': {
+        pinnedWorktree = op.worktreePath
+        publishPanel('pin')
         return { ok: true }
       }
       case 'session.open': {

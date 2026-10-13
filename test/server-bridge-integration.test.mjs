@@ -73,6 +73,18 @@ test('bridge register binds terminal ids to a worktree and shows up in panel dat
   assert.deepEqual(data.worktrees[0].terminalIds.sort(), ['pty_bridge', 'term_bridge'], 'live terminals of the worktree are listed for panel matching')
 })
 
+test('the pinned worktree survives a panel remount: the server keeps it and publishes it in the panel data', async () => {
+  assert.equal(readPanelData().pinnedWorktree ?? null, null, 'nothing pinned initially')
+  const pinned = await api('POST', '/api/bridge', { op: 'worktree.pin', worktreePath: repo })
+  assert.equal(pinned.status, 200)
+  await server.settlePanel()
+  assert.equal(readPanelData().pinnedWorktree, repo)
+  const cleared = await api('POST', '/api/bridge', { op: 'worktree.pin', worktreePath: null })
+  assert.equal(cleared.status, 200)
+  await server.settlePanel()
+  assert.equal(readPanelData().pinnedWorktree, null)
+})
+
 test('publish rewrites the panel when the file on disk was replaced externally', async () => {
   writeFileSync(panelPath, '<!doctype html><html><body>baseline</body></html>')
   await api('POST', '/api/panel/publish')
