@@ -102,7 +102,7 @@
 /*__INLINE:threads__*/
 
 // ------------------------------------------------------------------ data
-const TEMPLATE_VERSION = 'v17'
+const TEMPLATE_VERSION = 'v18'
 let DATA = JSON.parse(document.getElementById('orca-panel-data').textContent || '{}')
 const PREVIEW = window.parent === window                       // opened in a normal browser (server /panel-preview)
 const PREVIEW_TOKEN = document.querySelector('meta[name="sr-token"]')?.content ?? null
@@ -116,6 +116,8 @@ class Raw { constructor(html) { this.html = html } }
 const raw = (html) => new Raw(html)
 function h(strings, ...values) { return strings.reduce((out, part, index) => out + part + (index < values.length ? (values[index] instanceof Raw ? values[index].html : escapeHtml(values[index])) : ''), '') }
 function formatTime(iso) { if (!iso) return '—'; const d = new Date(iso); return Number.isNaN(d.getTime()) ? String(iso) : d.toLocaleTimeString() }
+// Time for today, month/day otherwise: a branch pushed days ago must not look like it was pushed today.
+function formatWhen(iso) { if (!iso) return '—'; const d = new Date(iso); if (Number.isNaN(d.getTime())) return String(iso); return d.toDateString() === new Date().toDateString() ? d.toLocaleTimeString() : `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}` }
 function notice(message, isError) { const el = document.getElementById('notice'); el.textContent = message; el.className = 'notice' + (isError ? ' error' : ''); el.hidden = !message; UI.lastMessage = message }
 
 // ------------------------------------------------------------------ host bridge (panel actions)
@@ -328,12 +330,17 @@ function renderOverview() {
   const repoFilter = UI.repoFilter || ''
   const draftOnly = Boolean(UI.draftOnly)
   const rows = prs.filter(({ repo, pr }) => (!repoFilter || repo.id === repoFilter) && (!draftOnly || pr.isDraft))
+  // Branches I pushed that have no PR yet (any remote branch of mine, even from a checkout Orca does not know).
+  const branchRows = overview.repos.flatMap((repo) => (repo.branches || []).map((branch) => ({ repo, branch }))).filter(({ repo }) => !repoFilter || repo.id === repoFilter).sort((a, b) => String(b.branch.committedDate).localeCompare(String(a.branch.committedDate)))
   app.innerHTML = h`
     <div class="card"><div class="card-head">worktree</div><div class="card-body">
       ${raw((DATA.worktrees || []).length === 0 ? '<div class="muted">Orca에 등록된 worktree가 없습니다.</div>' : (DATA.worktrees || []).map((w) => h`<div class="list-item"><span class="grow"><strong>${w.repoDisplayName}</strong> <span class="mono">${w.branch}</span>${w.sessionId ? raw(' <span class="badge">세션</span>') : ''}${(w.bridgeTerminalIds || []).length ? raw(' <span class="badge">브리지</span>') : ''}</span><button type="button" class="btn small" data-open-worktree="${w.path}">${w.sessionId ? '열기' : '리뷰 시작'}</button></div>`).join(''))}
     </div></div>
     <div class="card"><div class="card-head">로컬 세션 <span class="muted small">${sessions.length}</span></div><div class="card-body">
       ${raw(sessions.length === 0 ? '<div class="muted">아직 세션이 없습니다.</div>' : sessions.map((s) => h`<div class="list-item"><span class="grow"><strong>${s.repoDisplayName}</strong> <span class="mono">${s.branch}</span> <span class="badge">${s.status}</span> <span class="muted small">open ${s.threads.open} · resolved ${s.threads.resolved}</span></span>${s.status !== 'completed' ? raw(h`<button type="button" class="btn small" data-open-session="${s.id}">열기</button>`) : ''}<button type="button" class="btn small danger" data-delete-session="${s.id}">삭제</button></div>`).join(''))}
+    </div></div>
+    <div class="card"><div class="card-head">내 브랜치 · PR 없음 <span class="muted small">${branchRows.length}건 · 최근 30일에 푸시</span></div><div class="card-body">
+      ${raw(branchRows.length === 0 ? '<div class="muted">PR 없이 푸시한 내 브랜치가 없습니다.</div>' : branchRows.map(({ repo, branch }) => h`<div class="list-item" style="flex-direction:column;align-items:stretch;gap:2px"><span class="pr-title"><span class="badge">PR 없음</span> <strong class="mono">${branch.name}</strong></span><span class="muted small">${repo.displayName} · ${formatWhen(branch.committedDate)} · ${branch.headline}</span><span class="row">${branch.worktreePath ? raw(h`<button type="button" class="btn small" data-open-worktree="${branch.worktreePath}">리뷰 시작</button>`) : raw('<span class="muted small">Orca에 등록된 worktree 없음</span>')}<span class="muted small mono" style="user-select:all">${branch.url}</span></span></div>`).join(''))}
     </div></div>
     <div class="card"><div class="card-head">Open PR <span class="muted small">${overview.github.enabled ? (overview.github.lastFetchedAt ? '조회 ' + formatTime(overview.github.lastFetchedAt) : '') : 'gh 없음'}</span></div><div class="card-body">
       ${raw(overview.github.errors?.length ? '<div class="notice" style="margin:0 0 6px">' + overview.github.errors.map((e) => h`<div><strong>${e.repo}</strong>: ${e.message}</div>`).join('') + '</div>' : '')}

@@ -9,6 +9,7 @@ import { ApiError, SessionStore, summarizeSession, writeJsonAtomic } from './lib
 import { GitReader, readRepoFileLines } from './lib/git.mjs'
 import { OrcaReader } from './lib/orca.mjs'
 import { GitHubReader, parseGitHubRemote } from './lib/github.mjs'
+import { branchCards } from './lib/branches.mjs'
 import { RunManager, defaultAgentCommands, pickRunToShow, filterIgnoredChanges } from './lib/runs.mjs'
 import { annotateThreads } from './lib/anchor.mjs'
 import { buildPrompt, selectRunnableThreads } from './lib/prompt.mjs'
@@ -157,11 +158,14 @@ export function createServer({
     for (const repo of repos) {
       const target = parseGitHubRemote(repo.remoteUrl)
       let prs = []
+      let branches = []
       if (target && ghAvailable) {
-        const result = await github.listOpenPullRequests(target, { force })
+        const [result, mine] = await Promise.all([github.listOpenPullRequests(target, { force }), github.listMyBranchesWithoutPr(target, { force })])
         prs = result.prs
+        branches = branchCards({ repoId: repo.id, branches: mine.branches, prs, worktrees })
         if (result.error) errors.push({ repo: repo.displayName, message: result.error })
-        if (result.fetchedAt && (!lastFetchedAt || result.fetchedAt > lastFetchedAt)) lastFetchedAt = result.fetchedAt
+        if (mine.error && mine.error !== result.error) errors.push({ repo: repo.displayName, message: `내 브랜치 조회 실패: ${mine.error}` })
+        for (const fetchedAt of [result.fetchedAt, mine.fetchedAt]) if (fetchedAt && (!lastFetchedAt || fetchedAt > lastFetchedAt)) lastFetchedAt = fetchedAt
       }
       repoCards.push({
         id: repo.id,
@@ -169,7 +173,8 @@ export function createServer({
         displayName: repo.displayName,
         github: target,
         worktrees: worktrees.filter((entry) => entry.repoId === repo.id).map((entry) => ({ worktreeId: entry.id, path: entry.path, branch: entry.branch, displayName: entry.displayName })),
-        prs
+        prs,
+        branches
       })
     }
     return { repos: repoCards, sessions: store.listSessions(), github: { enabled: ghAvailable, lastFetchedAt: lastFetchedAt ? new Date(lastFetchedAt).toISOString() : null, errors } }

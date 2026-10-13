@@ -2,6 +2,8 @@
 
 개인 컴퓨터들에서 함께 사용하는 Orca 플러그인 저장소입니다.
 
+[LLM Router](./llm_router/README.md)를 설치하면 평소처럼 `claude`·`codex`를 실행하고 질문할 때 모델·effort를 자동 선택합니다. 일반 CLI를 호출하는 self review 등 플러그인도 같은 경로를 사용합니다. 세션 대시보드에는 질문별 실제 사용 기록이 표시되고, 품질 평가와 응답 시간·토큰 기록을 누적해 선택 정책을 개선합니다.
+
 | 플러그인 | 개발 플러그인 등록 위치 | 설치 안내 |
 |---|---|---|
 | Local Self Review | 이 저장소 루트의 절대 경로 | 아래 설치 절차 |
@@ -30,7 +32,7 @@ Orca → Settings → Plugins에서 플러그인 시스템을 켜고 Development
 
 PR을 올리기 **전에** 사람이 직접 하는 셀프 리뷰 도구. GitHub PR 화면처럼 diff를 읽고, 라인 번호를 **드래그해 멀티라인 코멘트**를 남기고, "리뷰 완료 및 AI 수정" 버튼으로 **Claude 또는 Codex** 가 코멘트대로 코드를 고치게 한 뒤 다시 검토한다. 등록된 모든 레포의 **draft/open PR 목록과 상세**도 한 화면에서 본다.
 
-- GitHub 쓰기 = **0건**. 코멘트·세션·AI 실행 기록은 전부 로컬(`~/Library/Application Support/OrcaLocalSelfReview/`)에만 저장. GitHub 접근은 `gh` 읽기 전용 조회(PR 목록·상세·diff)뿐.
+- GitHub 쓰기 = **0건**. 코멘트·세션·AI 실행 기록은 전부 로컬(`~/Library/Application Support/OrcaLocalSelfReview/`)에만 저장. GitHub 접근은 `gh` 읽기 전용 조회(PR 목록·상세·diff, 내 브랜치 조회용 GraphQL query)뿐.
 - 런타임 의존성 = 0 (Node 내장 모듈만). 빌드 단계 없음.
 
 ## 구성
@@ -69,7 +71,7 @@ PR을 올리기 **전에** 사람이 직접 하는 셀프 리뷰 도구. GitHub 
 4. 완료 후 스레드별로 직접 resolve. (AI 성공만으로 자동 resolve 되지 않는다.)
 5. 만족하면 평소대로 PR 생성. 플러그인은 commit/push/PR 을 하지 않는다.
 
-패널 "전체 PR·세션" 탭에서는 Orca 에 등록된 모든 레포의 open PR(Draft 배지·레포 필터)과 로컬 세션을 본다. PR 상세·diff 와 PR 에 대한 로컬 코멘트는 "넓게"(내장 브라우저)에서 본다.
+패널 "전체 PR·세션" 탭에서는 Orca 에 등록된 모든 레포의 open PR(Draft 배지·레포 필터)과 로컬 세션을 본다. **PR 없이 푸시한 내 브랜치**(최근 30일, 내 GitHub 계정이 커밋한 브랜치)도 "내 브랜치 · PR 없음" 카드에 나온다. 원격 브랜치를 조회하므로 Orca 에 등록되지 않은 클론에서 푸시한 브랜치도 보이고, 해당 worktree 가 Orca 에 있으면 "리뷰 시작" 버튼이 붙는다. main·master·dev·release/·hotfix/ 는 제외한다. PR 상세·diff 와 PR 에 대한 로컬 코멘트는 "넓게"(내장 브라우저)에서 본다.
 
 ## AI 실행의 쓰기 금지 경계
 
@@ -78,7 +80,7 @@ PR을 올리기 **전에** 사람이 직접 하는 셀프 리뷰 도구. GitHub 
 | claude | `claude -p --permission-mode acceptEdits --allowedTools Read Edit Write MultiEdit Grep Glob LS` | 플러그인은 Bash 를 허용하지 않음. 단 사용자 전역 `~/.claude/settings.json` 의 permissions allow 규칙에 해당하는 Bash 는 실행될 수 있음(실측: `npm test` 가 실행됨) — `git push`·`gh` 를 allow 에 넣지 않을 것 |
 | codex | `codex exec --full-auto --skip-git-repo-check -C <worktree> -` | workspace-write 샌드박스, 네트워크 차단 기본값 |
 
-프롬프트에도 commit/push/gh 금지를 명시한다. 이 경계는 CLI 의 권한 정책에 의존하므로(OS 수준 격리 아님) CLI 업데이트·전역 permissions 변경 시 재검증이 필요하다. 플러그인 자체의 GitHub 접근은 `server/lib/github.mjs` 한 곳에서 `gh pr list/view/diff` 만 호출한다.
+프롬프트에도 commit/push/gh 금지를 명시한다. 이 경계는 CLI 의 권한 정책에 의존하므로(OS 수준 격리 아님) CLI 업데이트·전역 permissions 변경 시 재검증이 필요하다. 플러그인 자체의 GitHub 접근은 `server/lib/github.mjs` 한 곳에서 `gh pr list/view/diff` 와 읽기 전용 `gh api graphql` query(내 브랜치 조회) 만 호출한다. `graphql()` 은 mutation·subscription 을 코드에서 거부하고 테스트가 이를 검증한다.
 
 ## 개발
 
