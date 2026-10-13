@@ -100,9 +100,10 @@
 'use strict'
 /*__INLINE:selection__*/
 /*__INLINE:threads__*/
+/*__INLINE:confirm__*/
 
 // ------------------------------------------------------------------ data
-const TEMPLATE_VERSION = 'v19'
+const TEMPLATE_VERSION = 'v20'
 let DATA = JSON.parse(document.getElementById('orca-panel-data').textContent || '{}')
 const PREVIEW = window.parent === window                       // opened in a normal browser (server /panel-preview)
 const PREVIEW_TOKEN = document.querySelector('meta[name="sr-token"]')?.content ?? null
@@ -352,7 +353,7 @@ function renderOverview() {
   app.querySelector('#draftOnly').addEventListener('change', (e) => { UI.draftOnly = e.target.checked; renderOverview() })
   for (const button of app.querySelectorAll('[data-open-worktree]')) button.addEventListener('click', () => { UI.manualWorktree = button.dataset.openWorktree; UI.manualContextKey = contextKey(); ACTIVE_WORKTREE = (DATA.worktrees || []).find((w) => w.path === UI.manualWorktree) || null; ROUTE = 'review'; UI.file = null; if (ACTIVE_WORKTREE && !ACTIVE_WORKTREE.sessionId) act(() => send({ op: 'session.open', worktreePath: UI.manualWorktree })); render() })
   for (const button of app.querySelectorAll('[data-open-session]')) button.addEventListener('click', () => { const s = (DATA.sessionList || []).find((x) => x.id === button.dataset.openSession); UI.manualWorktree = s?.repoPath || null; UI.manualContextKey = contextKey(); ACTIVE_WORKTREE = (DATA.worktrees || []).find((w) => w.path === UI.manualWorktree) || { path: s.repoPath, branch: s.branch, displayName: s.branch, repoDisplayName: s.repoDisplayName, sessionId: s.id, bridgeTerminalIds: [] }; ROUTE = 'review'; UI.file = null; render() })
-  for (const button of app.querySelectorAll('[data-delete-session]')) button.addEventListener('click', () => { if (confirm('세션과 코멘트를 삭제할까요? (로컬에서만)')) act(() => send({ op: 'session.delete', sessionId: button.dataset.deleteSession })) })
+  for (const button of app.querySelectorAll('[data-delete-session]')) button.addEventListener('click', () => { if (armConfirm(button, { message: '세션과 코멘트를 삭제할까요? (로컬에서만) 한 번 더 누르면 삭제됩니다' }) === 'confirmed') act(() => send({ op: 'session.delete', sessionId: button.dataset.deleteSession })) })
 }
 
 function renderReview(session) {
@@ -403,7 +404,7 @@ function renderReview(session) {
   app.querySelector('#workingTree')?.addEventListener('change', (e) => act(() => send({ op: 'session.patch', sessionId: s.id, revision: s.revision, includeWorkingTree: e.target.checked })))
   app.querySelector('#untracked')?.addEventListener('change', (e) => act(() => send({ op: 'session.patch', sessionId: s.id, revision: s.revision, includeUntracked: e.target.checked })))
   app.querySelector('#runFix').addEventListener('click', () => act(() => send({ op: 'run.start', sessionId: s.id, revision: s.revision, agent: s.agent })))
-  app.querySelector('#completeSession').addEventListener('click', () => { const open = s.threads.filter((t) => t.status === 'open').length; if (open === 0 || confirm(`열린 스레드가 ${open}개 남아 있습니다. 완료할까요?`)) act(() => send({ op: 'session.complete', sessionId: s.id })) })
+  app.querySelector('#completeSession').addEventListener('click', () => { const open = s.threads.filter((t) => t.status === 'open').length; if (open === 0 || armConfirm(app.querySelector('#completeSession'), { armedLabel: `열린 ${open}개 · 그래도 완료`, message: `열린 스레드가 ${open}개 남아 있습니다. 한 번 더 누르면 완료합니다` }) === 'confirmed') act(() => send({ op: 'session.complete', sessionId: s.id })) })
   app.querySelector('#cancelRun')?.addEventListener('click', (e) => act(() => send({ op: 'run.cancel', runId: e.currentTarget.dataset.run })))
   app.querySelector('#runLog')?.addEventListener('toggle', (e) => { UI.runLogOpen = e.target.open })
   app.querySelector('#dismissRun')?.addEventListener('click', () => { UI.dismissedRun = run.id; render({ keepScroll: true }) })
@@ -670,7 +671,7 @@ function bindThreadHandlers(host, s) {
   }
   for (const b of host.querySelectorAll('[data-toggle]')) b.addEventListener('click', () => { const id = b.dataset.toggle; if (UI.expanded.has(id)) UI.expanded.delete(id); else UI.expanded.add(id); render({ keepScroll: true }) })
   for (const b of host.querySelectorAll('[data-thread-status]')) b.addEventListener('click', () => act(() => send({ op: 'thread.patch', sessionId: s.id, revision: s.revision, threadId: b.dataset.thread, status: b.dataset.threadStatus })))
-  for (const b of host.querySelectorAll('[data-thread-delete]')) b.addEventListener('click', () => { if (confirm('스레드를 삭제할까요?')) act(() => send({ op: 'thread.delete', sessionId: s.id, revision: s.revision, threadId: b.dataset.threadDelete })) })
+  for (const b of host.querySelectorAll('[data-thread-delete]')) b.addEventListener('click', () => { if (armConfirm(b, { message: '스레드를 삭제할까요? 한 번 더 누르면 삭제됩니다' }) === 'confirmed') act(() => send({ op: 'thread.delete', sessionId: s.id, revision: s.revision, threadId: b.dataset.threadDelete })) })
   for (const b of host.querySelectorAll('[data-reply]')) b.addEventListener('click', () => {
     const threadId = b.dataset.reply
     const ta = host.querySelector(`[data-reply-text="${threadId}"]`)
@@ -690,7 +691,7 @@ function bindThreadHandlers(host, s) {
       notice(error.message, true)
     })
   })
-  for (const b of host.querySelectorAll('[data-comment-delete]')) b.addEventListener('click', () => { if (confirm('코멘트를 삭제할까요?')) act(() => send({ op: 'comment.delete', sessionId: s.id, revision: s.revision, threadId: b.dataset.thread, commentId: b.dataset.commentDelete })) })
+  for (const b of host.querySelectorAll('[data-comment-delete]')) b.addEventListener('click', () => { if (armConfirm(b, { message: '코멘트를 삭제할까요? 한 번 더 누르면 삭제됩니다' }) === 'confirmed') act(() => send({ op: 'comment.delete', sessionId: s.id, revision: s.revision, threadId: b.dataset.thread, commentId: b.dataset.commentDelete })) })
   for (const b of host.querySelectorAll('[data-comment-edit]')) b.addEventListener('click', () => {
     const commentEl = host.querySelector(`[data-comment="${b.dataset.commentEdit}"] .body`)
     const thread = s.threads.find((t) => t.id === b.dataset.thread)
