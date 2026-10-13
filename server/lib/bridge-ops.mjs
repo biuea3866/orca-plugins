@@ -88,6 +88,7 @@ export function validateOp(op) {
     case 'comment.delete':
       return requireSession(op) && requireRevision(op) && requireString(op.threadId, 64) && requireString(op.commentId, 64) ? { ok: true } : fail('sessionId, revision, threadId, commentId required')
     case 'run.start':
+      if (op.mode !== undefined && op.mode !== 'fix' && op.mode !== 'answer') return fail('mode must be fix or answer')
       return requireSession(op) && requireRevision(op) && AGENTS.has(op.agent) ? { ok: true } : fail('sessionId, revision and agent (claude|codex) required')
     case 'run.cancel':
       return requireString(op.runId, 64) ? { ok: true } : fail('runId required')

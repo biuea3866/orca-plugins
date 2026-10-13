@@ -12,6 +12,7 @@ import { GitHubReader, parseGitHubRemote } from './lib/github.mjs'
 import { branchCards } from './lib/branches.mjs'
 import { discoverSiblingClones } from './lib/clones.mjs'
 import { applyFullFiles } from './lib/full-file.mjs'
+import { buildAnswerPrompt, selectAnswerableThreads, parseAnswers, newNonce } from './lib/answers.mjs'
 import { RunManager, defaultAgentCommands, pickRunToShow, filterIgnoredChanges } from './lib/runs.mjs'
 import { annotateThreads } from './lib/anchor.mjs'
 import { buildPrompt, selectRunnableThreads } from './lib/prompt.mjs'
@@ -84,7 +85,11 @@ export function createServer({
     agentCommands: agentCommands ?? defaultAgentCommands((name) => resolveBin(name)),
     git,
     now,
-    onFinished: (run) => { try { store.setStatus(run.sessionId, 'rechecking') } catch { /* session gone */ } publishPanel('run-finished') },
+    onFinished: (run) => {
+      if (run.mode === 'answer') applyAnswers(run)
+      else { try { store.setStatus(run.sessionId, 'rechecking') } catch { /* session gone */ } }
+      publishPanel('run-finished')
+    },
     ignoreChangedPaths: [join(panelRoot, 'panel.html')]
   })
   const startedAt = now()
@@ -225,24 +230,44 @@ export function createServer({
     return null
   }
 
+  /** An answer run is done: turn the agent's answer blocks into AI comments on the threads that were asked about. */
+  function applyAnswers(run) {
+    try {
+      const latest = runs.get(run.id)
+      let added = []
+      if (latest.status === 'succeeded') {
+        const { answers } = parseAnswers({ text: runs.readLog(latest.id).log, threadIds: latest.threadIds, nonce: latest.nonce })
+        const entries = Object.entries(answers).map(([threadId, answer]) => ({ threadId, body: answer, agent: latest.agent, runId: latest.id }))
+        try { added = store.appendAiComments(latest.sessionId, entries).added } catch { /* session gone */ }
+      }
+      latest.answered = added
+      latest.unanswered = latest.threadIds.filter((threadId) => !added.includes(threadId))
+      runs.save(latest)
+    } catch { /* the run record vanished: nothing to attach to */ }
+  }
+
   async function startRun(sessionId, body) {
     const session = store.withRevision(sessionId, body.revision)
     const agent = body.agent ?? session.agent
     if (agent !== 'claude' && agent !== 'codex') throw new ApiError(400, 'invalid_field', 'agent must be claude or codex')
+    const mode = body.mode ?? 'fix'
+    if (mode !== 'fix' && mode !== 'answer') throw new ApiError(400, 'invalid_field', 'mode must be fix or answer')
     if (!session.repoPath || !existsSync(session.repoPath)) throw new ApiError(400, 'worktree_missing', 'this session has no local worktree to run an agent in')
     const diff = await sessionDiff(session)
     annotateThreads(diff.files, session.threads)
-    const threads = selectRunnableThreads(session.threads)
-    if (threads.length === 0) throw new ApiError(400, 'no_runnable_threads', 'no open, up-to-date threads to send to the agent')
+    const threads = mode === 'answer' ? selectAnswerableThreads(session.threads) : selectRunnableThreads(session.threads)
+    if (threads.length === 0) throw new ApiError(400, 'no_runnable_threads', mode === 'answer' ? 'no open, up-to-date threads waiting for an answer' : 'no open, up-to-date threads to send to the agent')
+    const nonce = newNonce()
     let prompt
     try {
-      prompt = buildPrompt({ session, threads, readFileLines: (relativePath) => readRepoFileLines(session.repoPath, relativePath) })
+      const readFileLines = (relativePath) => readRepoFileLines(session.repoPath, relativePath)
+      prompt = mode === 'answer' ? buildAnswerPrompt({ session, threads, readFileLines, nonce }) : buildPrompt({ session, threads, readFileLines })
     } catch (error) {
       throw new ApiError(400, 'prompt_too_large', error.message)
     }
-    const run = await runs.start({ session, threadIds: threads.map((thread) => thread.id), agent, prompt })
+    const run = await runs.start({ session, threadIds: threads.map((thread) => thread.id), agent, prompt, mode, nonce })
     session.agent = agent
-    session.status = 'fixing'
+    if (mode === 'fix') session.status = 'fixing'
     store.save(session)
     return run
   }
@@ -344,7 +369,7 @@ export function createServer({
       if (run.status !== 'running' && run.status !== 'queued' && run.changedFiles.length && run.cwd && existsSync(run.cwd)) {
         try { aiChanges = trimFilesForPanel(await git.workingTreeChangesFor(run.cwd, run.changedFiles)) } catch (error) { aiChanges = { error: error.message } }
       }
-      runsBySession[run.sessionId] = { ...run, fingerprintsBefore: undefined, logTail: log.slice(-PANEL_LOG_TAIL_BYTES), aiChanges }
+      runsBySession[run.sessionId] = { ...run, fingerprintsBefore: undefined, nonce: undefined, logTail: log.slice(-PANEL_LOG_TAIL_BYTES), aiChanges }
     }
     if (reason !== 'run-progress' || !lastOverview) {
       try { lastOverview = await overview() } catch (error) { lastOverview = { repos: [], sessions: sessionList, github: { enabled: false, lastFetchedAt: null, errors: [{ repo: '(orca)', message: error.message }] } } }

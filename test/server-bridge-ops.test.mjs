@@ -31,6 +31,14 @@ test('validateOp accepts every documented op and rejects unknown ops or missing 
   assert.equal(validateOp({ op: 'run.start', sessionId: 'ses_000000000001', revision: 1, agent: 'gpt' }).ok, false)
 })
 
+test('run.start takes an optional mode of fix or answer', () => {
+  const base = { op: 'run.start', sessionId: 'ses_000000000001', revision: 1, agent: 'claude' }
+  assert.deepEqual(validateOp(base), { ok: true })
+  assert.deepEqual(validateOp({ ...base, mode: 'fix' }), { ok: true })
+  assert.deepEqual(validateOp({ ...base, mode: 'answer' }), { ok: true })
+  assert.equal(validateOp({ ...base, mode: 'bogus' }).ok, false)
+})
+
 test('file.full needs a session, a path and an explicit boolean', () => {
   const sessionId = 'ses_000000000001'
   assert.deepEqual(validateOp({ op: 'file.full', sessionId, path: 'src/a.js', full: true }), { ok: true })

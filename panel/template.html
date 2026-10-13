@@ -61,6 +61,8 @@
   .comment.pending { opacity: .75; }
   .thread.resolved .thread-body { display: none; }
   .thread.resolved.expanded .thread-body { display: block; }
+  .comment.ai { border-left: 3px solid #8957e5; padding-left: 6px; background: color-mix(in srgb, var(--card) 92%, #8957e5 8%); }
+  .comment.ai .body { white-space: pre-wrap; }
   .comment { padding: 6px 8px; border-bottom: 1px solid var(--border); }
   .comment:last-of-type { border-bottom: 0; }
   .comment .meta { font-size: 10.5px; color: var(--muted-foreground); display: flex; gap: 6px; align-items: center; }
@@ -104,7 +106,7 @@
 /*__INLINE:pin__*/
 
 // ------------------------------------------------------------------ data
-const TEMPLATE_VERSION = 'v22'
+const TEMPLATE_VERSION = 'v23'
 let DATA = JSON.parse(document.getElementById('orca-panel-data').textContent || '{}')
 const PREVIEW = window.parent === window                       // opened in a normal browser (server /panel-preview)
 const PREVIEW_TOKEN = document.querySelector('meta[name="sr-token"]')?.content ?? null
@@ -391,6 +393,7 @@ function renderReview(session) {
       </div>
       <div class="row" style="margin-top:6px">
         <select id="agent">${raw(['claude', 'codex'].map((name) => h`<option value="${name}" ${raw(s.agent === name ? 'selected' : '')} ${raw(agents[name]?.available ? '' : 'disabled')}>${name}${agents[name]?.available ? '' : ' (없음)'}</option>`).join(''))}</select>
+        <button type="button" class="btn" id="runAnswer" ${raw(!agents[s.agent]?.available || live || awaitingCount(s) === 0 ? 'disabled' : '')} title="내가 단 질문 코멘트에 AI 가 같은 스레드에 답글로 답합니다 (코드는 수정하지 않습니다)">AI 답변 요청 (${awaitingCount(s)})</button>
         <button type="button" class="btn primary" id="runFix" ${raw(canRun ? '' : 'disabled')} title="${!agents[s.agent]?.available ? s.agent + ' CLI 없음' : runnable === 0 ? '열려 있고 최신인 스레드 없음' : live ? '실행 중' : ''}">리뷰 완료 및 AI 수정 (${runnable})</button>
         <button type="button" class="btn small" id="completeSession">완료</button>
       </div>
@@ -406,6 +409,7 @@ function renderReview(session) {
   app.querySelector('#baseRef')?.addEventListener('change', (e) => act(() => send({ op: 'session.patch', sessionId: s.id, revision: s.revision, baseRef: e.target.value })))
   app.querySelector('#workingTree')?.addEventListener('change', (e) => act(() => send({ op: 'session.patch', sessionId: s.id, revision: s.revision, includeWorkingTree: e.target.checked })))
   app.querySelector('#untracked')?.addEventListener('change', (e) => act(() => send({ op: 'session.patch', sessionId: s.id, revision: s.revision, includeUntracked: e.target.checked })))
+  app.querySelector('#runAnswer').addEventListener('click', () => act(() => send({ op: 'run.start', sessionId: s.id, revision: s.revision, agent: s.agent, mode: 'answer' })))
   app.querySelector('#runFix').addEventListener('click', () => act(() => send({ op: 'run.start', sessionId: s.id, revision: s.revision, agent: s.agent })))
   app.querySelector('#completeSession').addEventListener('click', () => { const open = s.threads.filter((t) => t.status === 'open').length; if (open === 0 || armConfirm(app.querySelector('#completeSession'), { armedLabel: `열린 ${open}개 · 그래도 완료`, message: `열린 스레드가 ${open}개 남아 있습니다. 한 번 더 누르면 완료합니다` }) === 'confirmed') act(() => send({ op: 'session.complete', sessionId: s.id })) })
   app.querySelector('#cancelRun')?.addEventListener('click', (e) => act(() => send({ op: 'run.cancel', runId: e.currentTarget.dataset.run })))
@@ -452,14 +456,21 @@ function runCardHtml(run) {
   const ended = run.endedAt ? new Date(run.endedAt) : null
   const changed = run.changedFiles || []
   return h`<div class="run ${live ? 'live' : ''}">
-    <div class="card-head">${live ? raw('<span class="spinner"></span>') : ''}AI 수정 <span class="badge ${live ? 'warn' : ''}">${RUN_LABELS[run.status] || run.status}</span><span class="muted small">${run.agent} · 스레드 ${run.threadIds.length}개 · <span id="runElapsed" data-started="${run.startedAt}" data-ended="${run.endedAt || ''}">${formatDuration((ended || new Date()) - started)}</span>${run.exitCode !== null && run.exitCode !== undefined ? ' · exit ' + run.exitCode : ''}</span><span style="flex:1"></span>${live ? raw(h`<button type="button" class="btn small danger" id="cancelRun" data-run="${run.id}">취소</button>`) : raw('<button type="button" class="btn ghost small" id="dismissRun">닫기</button>')}</div>
-    ${live ? raw(h`<div class="card-body small muted">${run.agent} 가 코멘트대로 코드를 고치는 중입니다. 끝나면 이 카드가 "완료"로 바뀌고 diff 가 자동 갱신됩니다. 시작 ${started.toLocaleTimeString()}</div>`) : ''}
-    ${!live ? raw(h`<div class="card-body small"><div>${run.status === 'succeeded' ? '에이전트가 작업을 마쳤습니다.' : run.status === 'failed' ? '에이전트가 오류로 끝났습니다 (로그 확인).' : run.status === 'cancelled' ? '취소되었습니다.' : '서버 재시작으로 추적이 끊겼습니다.'} ${started.toLocaleTimeString()} → ${ended ? ended.toLocaleTimeString() : '—'}</div>
+    <div class="card-head">${live ? raw('<span class="spinner"></span>') : ''}${run.mode === 'answer' ? 'AI 답변' : 'AI 수정'} <span class="badge ${live ? 'warn' : ''}">${RUN_LABELS[run.status] || run.status}</span><span class="muted small">${run.agent} · 스레드 ${run.threadIds.length}개 · <span id="runElapsed" data-started="${run.startedAt}" data-ended="${run.endedAt || ''}">${formatDuration((ended || new Date()) - started)}</span>${run.exitCode !== null && run.exitCode !== undefined ? ' · exit ' + run.exitCode : ''}</span><span style="flex:1"></span>${live ? raw(h`<button type="button" class="btn small danger" id="cancelRun" data-run="${run.id}">취소</button>`) : raw('<button type="button" class="btn ghost small" id="dismissRun">닫기</button>')}</div>
+    ${live ? raw(h`<div class="card-body small muted">${run.mode === 'answer' ? run.agent + ' 가 질문을 읽고 답변을 쓰는 중입니다. 끝나면 답변이 스레드에 달립니다 (코드는 수정하지 않습니다).' : run.agent + ' 가 코멘트대로 코드를 고치는 중입니다. 끝나면 이 카드가 "완료"로 바뀌고 diff 가 자동 갱신됩니다.'} 시작 ${started.toLocaleTimeString()}</div>`) : ''}
+    ${!live && run.mode === 'answer' ? raw(answerResultHtml(run)) : ''}
+    ${!live && run.mode !== 'answer' ? raw(h`<div class="card-body small"><div>${run.status === 'succeeded' ? '에이전트가 작업을 마쳤습니다.' : run.status === 'failed' ? '에이전트가 오류로 끝났습니다 (로그 확인).' : run.status === 'cancelled' ? '취소되었습니다.' : '서버 재시작으로 추적이 끊겼습니다.'} ${started.toLocaleTimeString()} → ${ended ? ended.toLocaleTimeString() : '—'}</div>
       <div style="margin-top:4px"><strong>변경 파일 ${changed.length}개</strong>${changed.length ? '' : ' — 파일 변경이 감지되지 않았습니다. 로그에서 사유를 확인하세요.'}</div>
       ${raw(changed.map((path) => h`<div><button type="button" class="btn ghost small mono" data-jump-file="${path}">${path}</button></div>`).join(''))}
       <div class="muted" style="margin-top:4px">AI 의 수정은 <b>아직 커밋되지 않은 작업 트리 변경</b>이라 PR 기준 diff 에는 나타나지 않습니다. 아래 "AI 가 바꾼 내용"에서 확인하고, 괜찮으면 커밋하세요. 이 실행의 대상 스레드에는 <span class="badge">AI 실행 포함</span> 표시가 붙습니다.</div></div>
     ${raw(aiChangesHtml(run))}`) : ''}
     <details id="runLog" ${raw(UI.runLogOpen ? 'open' : '')}><summary class="small" style="padding:4px 8px">로그${live ? ' (10초마다 갱신)' : ''}</summary><pre>${run.logTail || '(아직 출력 없음)'}</pre></details></div>`
+}
+function answerResultHtml(run) {
+  const total = (run.threadIds || []).length
+  const answered = (run.answered || []).length
+  const text = run.status === 'succeeded' ? '답변 ' + answered + '/' + total + '개를 스레드에 달았습니다.' + (answered < total ? ' 일부는 답변을 만들지 못했습니다. 로그를 확인하세요.' : '') : run.status === 'failed' ? '에이전트가 오류로 끝났습니다 (로그 확인).' : run.status === 'cancelled' ? '취소되었습니다.' : '서버 재시작으로 추적이 끊겼습니다.'
+  return h`<div class="card-body small"><div>${text}</div></div>`
 }
 function aiChangesHtml(run) {
   const changes = run.aiChanges
@@ -532,6 +543,11 @@ function bindBridgePicker() {
 }
 
 function fileDomId(path) { return 'file-' + String(path).replace(/[^a-zA-Z0-9_-]/g, (c) => '_' + c.charCodeAt(0).toString(16)) }
+
+// Threads where the reviewer's comment is the latest word: open, up to date, and not already answered by the AI.
+function awaitingCount(session) {
+  return session.threads.filter((thread) => thread.status === 'open' && thread.applicability === 'current' && thread.comments[thread.comments.length - 1]?.author !== 'ai').length
+}
 
 // "전체 보기": the whole file as context instead of a few lines around each change. Only for local sessions and
 // files that exist on both sides (added/deleted/untracked files are already shown completely).
@@ -635,7 +651,7 @@ function threadHtml(thread) {
   }
   return h`<div class="thread ${thread.status === 'resolved' ? 'resolved' : ''} ${expanded ? 'expanded' : ''}" data-thread="${thread.id}">
     <div class="thread-head"><span class="badge">${thread.status === 'open' ? '열림' : '해결'}</span>${thread.applicability === 'outdated' ? raw('<span class="badge warn" title="현재 diff에서 원문을 찾지 못함">outdated</span>') : ''}${handledByAi ? raw('<span class="badge" title="마지막 AI 실행의 대상 스레드 — 결과는 실행 카드의 \'AI 가 바꾼 내용\' 참고">AI 실행 포함</span>') : ''}<span class="mono">${thread.side} ${range}</span><span class="grow"></span>${thread.status === 'resolved' ? raw(h`<button type="button" class="btn ghost small" data-toggle="${thread.id}">${expanded ? '접기' : '펼치기'}</button>`) : ''}<button type="button" class="btn small" ${raw(busy)} data-thread-status="${thread.status === 'open' ? 'resolved' : 'open'}" data-thread="${thread.id}">${thread.status === 'open' ? '해결' : '다시 열기'}</button><button type="button" class="btn small danger" ${raw(busy)} data-thread-delete="${thread.id}">삭제</button></div>
-    <div class="thread-body">${raw(thread.comments.map((c) => h`<div class="comment" data-comment="${c.id}"><div class="meta"><span>나</span><span>${formatTime(c.createdAt)}</span><span class="grow"></span><button type="button" class="btn ghost small" ${raw(busy)} data-comment-edit="${c.id}" data-thread="${thread.id}">수정</button><button type="button" class="btn ghost small" ${raw(busy)} data-comment-delete="${c.id}" data-thread="${thread.id}">삭제</button></div><div class="body">${c.body}</div></div>`).join(''))}
+    <div class="thread-body">${raw(thread.comments.map((c) => h`<div class="comment${c.author === 'ai' ? ' ai' : ''}" data-comment="${c.id}"><div class="meta"><span>${c.author === 'ai' ? 'AI · ' + (c.agent || '') : '나'}</span><span>${formatTime(c.createdAt)}</span><span class="grow"></span>${c.author === 'ai' ? '' : raw(h`<button type="button" class="btn ghost small" ${raw(busy)} data-comment-edit="${c.id}" data-thread="${thread.id}">수정</button>`)}<button type="button" class="btn ghost small" ${raw(busy)} data-comment-delete="${c.id}" data-thread="${thread.id}">삭제</button></div><div class="body">${c.body}</div></div>`).join(''))}
       ${raw(pendingReplies.map((body) => h`<div class="comment pending"><div class="meta"><span>나</span><span class="badge warn">전송 중…</span></div><div class="body">${body}</div></div>`).join(''))}
       <div class="form"><textarea rows="2" placeholder="답글…" data-reply-text="${thread.id}"></textarea><div class="actions"><button type="button" class="btn primary small" ${raw(busy)} data-reply="${thread.id}">답글</button></div></div></div></div>`
 }
