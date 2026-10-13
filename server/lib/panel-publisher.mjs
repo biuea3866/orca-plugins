@@ -96,7 +96,7 @@ export class PanelPublisher {
 export function trimFilesForPanel(files) {
   return files.map((file) => {
     const total = file.hunks.reduce((sum, hunk) => sum + hunk.lines.length, 0)
-    if (total <= PANEL_FILE_LINE_CAP) return file
+    if (file.fullContext || total <= PANEL_FILE_LINE_CAP) return file
     return { ...file, hunks: [], truncated: true, panelTruncated: true }
   })
 }

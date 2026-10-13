@@ -11,6 +11,7 @@ import { OrcaReader } from './lib/orca.mjs'
 import { GitHubReader, parseGitHubRemote } from './lib/github.mjs'
 import { branchCards } from './lib/branches.mjs'
 import { discoverSiblingClones } from './lib/clones.mjs'
+import { applyFullFiles } from './lib/full-file.mjs'
 import { RunManager, defaultAgentCommands, pickRunToShow, filterIgnoredChanges } from './lib/runs.mjs'
 import { annotateThreads } from './lib/anchor.mjs'
 import { buildPrompt, selectRunnableThreads } from './lib/prompt.mjs'
@@ -317,7 +318,12 @@ export function createServer({
         const detail = await sessionDetail(summary.id)
         let baseCandidates = []
         if (detail.session.kind === 'local' && detail.session.repoPath) { try { baseCandidates = await git.baseCandidates(detail.session.repoPath) } catch { baseCandidates = [] } }
-        sessions[summary.id] = { session: detail.session, diff: { ...detail.diff, files: trimFilesForPanel(detail.diff.files) }, baseCandidates }
+        const session = detail.session
+        // Files the user expanded to "whole file" carry every line; PR sessions have no checkout to read them from.
+        const files = session.kind === 'local' && session.repoPath
+          ? await applyFullFiles({ files: detail.diff.files, fullPaths: viewState[summary.id]?.fullFiles, load: (file) => git.fullContextFile(session.repoPath, { baseRef: session.baseRef, includeUntracked: session.includeUntracked, includeWorkingTree: session.includeWorkingTree, path: file.path, oldPath: file.oldPath ?? undefined }) })
+          : detail.diff.files
+        sessions[summary.id] = { session, diff: { ...detail.diff, files: trimFilesForPanel(files) }, baseCandidates }
       } catch (error) {
         let baseCandidates = []
         const session = store.getSession(summary.id)
@@ -379,8 +385,16 @@ export function createServer({
       case 'ping': return { ok: true }
       case 'view': {
         const previous = viewState[op.sessionId]
-        viewState[op.sessionId] = { route: op.route ?? 'review', file: op.file ?? null, scroll: Number.isFinite(op.scroll) ? op.scroll : 0 }
+        viewState[op.sessionId] = { route: op.route ?? 'review', file: op.file ?? null, scroll: Number.isFinite(op.scroll) ? op.scroll : 0, ...(previous?.fullFiles ? { fullFiles: previous.fullFiles } : {}) }
         if (op.file && op.file !== previous?.file && op.loadFile) publishPanel('view-file')
+        return { ok: true }
+      }
+      case 'file.full': {
+        store.getSession(op.sessionId)
+        const previous = viewState[op.sessionId] ?? { route: 'review', file: null, scroll: 0 }
+        const others = (previous.fullFiles ?? []).filter((path) => path !== op.path)
+        viewState[op.sessionId] = { ...previous, ...(op.full ? { file: op.path } : {}), fullFiles: op.full ? [...others, op.path] : others }
+        publishPanel('full-file')
         return { ok: true }
       }
       case 'worktree.pin': {

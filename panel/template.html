@@ -104,7 +104,7 @@
 /*__INLINE:pin__*/
 
 // ------------------------------------------------------------------ data
-const TEMPLATE_VERSION = 'v21'
+const TEMPLATE_VERSION = 'v22'
 let DATA = JSON.parse(document.getElementById('orca-panel-data').textContent || '{}')
 const PREVIEW = window.parent === window                       // opened in a normal browser (server /panel-preview)
 const PREVIEW_TOKEN = document.querySelector('meta[name="sr-token"]')?.content ?? null
@@ -533,6 +533,14 @@ function bindBridgePicker() {
 
 function fileDomId(path) { return 'file-' + String(path).replace(/[^a-zA-Z0-9_-]/g, (c) => '_' + c.charCodeAt(0).toString(16)) }
 
+// "전체 보기": the whole file as context instead of a few lines around each change. Only for local sessions and
+// files that exist on both sides (added/deleted/untracked files are already shown completely).
+function fullToggleHtml(session, file) {
+  if (session.kind !== 'local' || file.binary || (file.changeType !== 'modified' && file.changeType !== 'renamed')) return ''
+  const failed = file.fullContextError ? h`<span class="badge warn" title="${file.fullContextError}">전체 보기 실패</span>` : ''
+  return failed + h`<button type="button" class="btn ghost small" data-full-toggle="${file.path}" data-full="${file.fullContext ? '0' : '1'}" title="${file.fullContext ? '변경된 부분만 보기' : '파일 전체 코드 보기'}">${file.fullContext ? '변경점만' : '전체 보기'}</button>`
+}
+
 function fileBlockHtml(session, file) {
   const { session: s } = session
   const canComment = Boolean(PREVIEW || bridgeTerminalId())
@@ -542,7 +550,7 @@ function fileBlockHtml(session, file) {
   const out = []
   const add = (x) => { out[out.length] = x }
   add(h`<div class="file-block ${collapsed ? 'collapsed' : ''}" id="${fileDomId(file.path)}" data-file-block="${file.path}">`)
-  add(h`<div class="file-head"><button type="button" class="btn ghost small" data-toggle-file="${file.path}" title="${collapsed ? '펼치기' : '접기'}">${collapsed ? '▸' : '▾'}</button><span class="name mono" title="${file.path}">${file.path}${file.oldPath ? raw(h`<span class="muted"> ← ${file.oldPath}</span>`) : ''}</span><span class="badge">${file.changeType}</span><span class="small"><span class="add-count">+${file.additions}</span> <span class="del-count">−${file.deletions}</span>${threads.length ? ' 💬' + threads.length : ''}</span></div>`)
+  add(h`<div class="file-head"><button type="button" class="btn ghost small" data-toggle-file="${file.path}" title="${collapsed ? '펼치기' : '접기'}">${collapsed ? '▸' : '▾'}</button><span class="name mono" title="${file.path}">${file.path}${file.oldPath ? raw(h`<span class="muted"> ← ${file.oldPath}</span>`) : ''}</span>${raw(fullToggleHtml(s, file))}<span class="badge">${file.changeType}</span><span class="small"><span class="add-count">+${file.additions}</span> <span class="del-count">−${file.deletions}</span>${threads.length ? ' 💬' + threads.length : ''}</span></div>`)
   if (!collapsed) {
     if (file.binary || file.truncated || !file.hunks.length) {
       add(h`<div class="empty">${file.binary ? '바이너리 파일' : file.panelTruncated ? '이 파일의 diff 는 아직 패널에 실리지 않았습니다.' : file.truncated ? 'diff가 20,000줄을 초과합니다.' : '표시할 hunk 없음'}${file.panelTruncated ? raw(h`<div style="margin-top:6px"><button type="button" class="btn primary small" data-load-file="${file.path}">이 파일 불러오기</button></div>`) : ''}</div>`)
@@ -575,6 +583,7 @@ function fileBlockHtml(session, file) {
 function bindFileBlock(host, session) {
   const { session: s } = session
   for (const b of host.querySelectorAll('[data-toggle-file]')) b.addEventListener('click', () => { const path = b.dataset.toggleFile; if (UI.collapsedFiles.has(path)) UI.collapsedFiles.delete(path); else UI.collapsedFiles.add(path); refreshFile(path) })
+  for (const b of host.querySelectorAll('[data-full-toggle]')) b.addEventListener('click', () => act(() => send({ op: 'file.full', sessionId: s.id, path: b.dataset.fullToggle, full: b.dataset.full === '1' })))
   for (const b of host.querySelectorAll('[data-load-file]')) b.addEventListener('click', () => act(() => send({ op: 'view', sessionId: s.id, route: ROUTE, file: b.dataset.loadFile, scroll: window.scrollY, loadFile: true })))
   bindThreadHandlers(host, s)
 }

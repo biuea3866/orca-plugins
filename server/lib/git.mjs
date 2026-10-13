@@ -6,6 +6,8 @@ import { ApiError } from './store.mjs'
 import { parseUnifiedDiff } from './diff-parser.mjs'
 
 const BASE_CANDIDATES = ['origin/main', 'origin/dev', 'origin/master', 'main', 'dev', 'master']
+// git shows at most this many context lines around a change: large enough that a whole file is one hunk.
+const FULL_CONTEXT_LINES = 1_000_000
 
 export class GitReader {
   constructor({ exec, gitBinary = 'git' }) {
@@ -76,12 +78,7 @@ export class GitReader {
    * includeUntracked adds untracked (never ignored) files on top of that.
    */
   async workingTreeDiff(cwd, { baseRef, includeUntracked = false, includeWorkingTree = false }) {
-    const headSha = await this.headSha(cwd)
-    const baseSha = (await this.run(cwd, ['rev-parse', baseRef])).stdout.trim()
-    // No common ancestor (orphan/squashed snapshot branches): compare the working tree against the base itself.
-    let mergeBaseSha = null
-    let noMergeBase = false
-    try { mergeBaseSha = await this.mergeBase(cwd, baseRef) } catch (error) { if (!(error instanceof ApiError)) throw error; noMergeBase = true }
+    const { headSha, baseSha, mergeBaseSha, noMergeBase } = await this.diffBase(cwd, baseRef)
     const diffArgs = ['diff', '--no-color', '--no-ext-diff', '--find-renames', mergeBaseSha ?? baseSha]
     if (!includeWorkingTree) diffArgs.push('HEAD')
     const diff = await this.run(cwd, [...diffArgs, '--'])
@@ -94,6 +91,39 @@ export class GitReader {
       }
     }
     return { files, baseSha, headSha, mergeBaseSha, noMergeBase, includeWorkingTree, includeUntracked, computedAt: new Date().toISOString() }
+  }
+
+  /** The commits a diff is measured from. No common ancestor (orphan/squashed snapshot branches) leaves mergeBaseSha null: the base itself is used. */
+  async diffBase(cwd, baseRef) {
+    const headSha = await this.headSha(cwd)
+    const baseSha = (await this.run(cwd, ['rev-parse', baseRef])).stdout.trim()
+    let mergeBaseSha = null
+    let noMergeBase = false
+    try { mergeBaseSha = await this.mergeBase(cwd, baseRef) } catch (error) { if (!(error instanceof ApiError)) throw error; noMergeBase = true }
+    return { headSha, baseSha, mergeBaseSha, noMergeBase }
+  }
+
+  /**
+   * One file of the session diff with every line of the file as context instead of a few lines around each change
+   * ("show the whole file"). Same comparison as workingTreeDiff; null when the file is not part of that diff.
+   */
+  async fullContextFile(cwd, { baseRef, includeUntracked = false, includeWorkingTree = false, path, oldPath }) {
+    const { baseSha, mergeBaseSha } = await this.diffBase(cwd, baseRef)
+    const diffArgs = ['--literal-pathspecs', 'diff', '--no-color', '--no-ext-diff', '--find-renames', `--unified=${FULL_CONTEXT_LINES}`, mergeBaseSha ?? baseSha]
+    if (!includeWorkingTree) diffArgs.push('HEAD')
+    // The old path is needed too, otherwise a renamed file degrades to a whole-file addition.
+    const paths = oldPath && oldPath !== path ? [path, oldPath] : [path]
+    const diff = await this.run(cwd, [...diffArgs, '--', ...paths])
+    const found = parseUnifiedDiff(diff.stdout).find((file) => file.path === path)
+    if (found) return found
+    if (includeWorkingTree && includeUntracked && (await this.untrackedFiles(cwd)).includes(path)) {
+      const untracked = await this.run(cwd, ['diff', '--no-color', '--no-ext-diff', '--no-index', `--unified=${FULL_CONTEXT_LINES}`, '--', '/dev/null', path], { allowFailure: true })
+      if (untracked.code <= 1) {
+        const [entry] = parseUnifiedDiff(untracked.stdout, { changeType: 'untracked' })
+        if (entry) return { ...entry, path }
+      }
+    }
+    return null
   }
 
   /** What an AI run changed: HEAD vs working tree for the given paths (new files via --no-index). */
