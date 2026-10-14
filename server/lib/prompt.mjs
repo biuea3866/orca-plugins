@@ -7,7 +7,7 @@ export function selectRunnableThreads(threads) {
   return threads.filter((thread) => thread.status === 'open' && thread.applicability === 'current')
 }
 
-function contextBlock(readFileLines, thread) {
+export function contextBlock(readFileLines, thread) {
   if (thread.side !== 'new') return ''
   const lines = readFileLines(thread.path)
   if (!Array.isArray(lines) || lines.length === 0) return ''

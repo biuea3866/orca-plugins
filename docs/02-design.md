@@ -16,7 +16,8 @@
 ## Overview
 
 - 목표 = PR 생성 전 로컬 셀프 리뷰. GitHub PR 화면과 같은 diff 리뷰·드래그 멀티라인 코멘트·스레드 → "리뷰 완료 및 AI 수정" 버튼으로 Claude/Codex 헤드리스 실행 → 재검토.
-- GitHub 쓰기 = 0건. GitHub 접근은 `gh` 읽기 전용 조회(PR 목록·상세·diff)뿐.
+- GitHub API 쓰기 = 0건(PR·코멘트 생성 없음). 레포 이력에 쓰는 동작은 하나뿐: 사용자가 AI 수정 실행 카드의 "커밋 & 푸시"(`run.publish` op)를 두 번 눌렀을 때 서버(AI 아님)가 `server/lib/publish.mjs` 로 실행의 변경 파일만 커밋하고 세션 브랜치에 push 한다. 강제 push 없음, 공유 브랜치·이름이 다른 upstream 거부, push 실패 시 로컬 커밋 보존 후 push 만 재시도. GitHub 접근은 `gh` 읽기 전용 조회(PR 목록·상세·diff, 내 브랜치 조회용 GraphQL query)뿐. `GitHubReader.graphql()` 은 query 만 허용하고 mutation·subscription 은 거부한다.
+- AI 실행 기록 = 실행 시작 때 받은 스레드·브랜치를 실행 기록에 남기고, 실행이 끝나면 AI 가 바꾼 diff 를 `runs/<id>/changes.json`(0600)에 저장한다(`server/lib/run-history.mjs`). 작업 트리에서 읽는 diff 는 커밋하면 사라지기 때문이다. 패널 'AI 기록' 탭은 worktree 단위 목록(`runHistory`, 최대 30건)이다. 한 행 = 요청(실행) 1건이고 `threads`(질문 스레드마다 `answer` 를 붙인 `buildExchanges` 결과, 실행 기록의 `answers`, 기록 이전 실행은 세션 스레드에서 복원)와 AI 수정의 `summary`(출력 끝 1500자)를 싣는다. 최근 fix 실행 3건은 `aiChanges` 도 행에 넣어 펼치기를 패널 안의 토글로 끝낸다(브리지 op 한 번은 수 초 걸리고 터미널로 포커스를 가져간다). 더 오래된 실행의 diff·로그만 `run.view` op 로 연 실행 하나의 `runDetail` 로 받는다. 예산 초과 시 행은 `threads: null` 로 줄고 `runDetail` 이 대신 싣는다. 이 세션의 기록에 없는 실행은 404.
 - 구성 = Orca 플러그인 1개 = **우측 패널(컴패니언)** + **워커(커맨드)** + **로컬 서버(UI·API)**. 리뷰 본체는 같은 워크스페이스의 **Orca 내장 브라우저 탭**에 열린다.
 
 ## 플랫폼 제약 → 구조 결정 (사실 근거: Orca 앱 번들 `out/shared/plugins/*.js`)
@@ -140,7 +141,7 @@ interface DiffLine { type: 'context' | 'add' | 'del', oldNo: number | null, newN
 |---|---|---|---|
 | `GET /health` | — | `{ ok:true, protocolVersion:1, pid, startedAt }` | 토큰 불필요 |
 | `POST /api/shutdown` | — | `{ ok:true }` | 실행 중 AIRun 있으면 409 |
-| `GET /api/overview` | — | `{ repos: RepoOverview[], sessions: SessionSummary[], github: { enabled, lastFetchedAt, errors: {repo:string, message:string}[] } }` | repos = `orca repo list` 기반, 각 repo에 `worktrees[]`(path, branch, displayName, worktreeId) + `prs[]`(number, title, isDraft, headRefName, baseRefName, author, updatedAt, url, additions, deletions, changedFiles) |
+| `GET /api/overview` | — | `{ repos: RepoOverview[], sessions: SessionSummary[], github: { enabled, lastFetchedAt, errors: {repo:string, message:string}[] } }` | repos = `orca repo list` 기반, 각 repo에 `worktrees[]`(path, branch, displayName, worktreeId, Orca 미등록 형제 클론이면 `unregistered: true` + worktreeId null — 등록 repo 와 같은 부모 디렉터리 바로 아래에서 origin 이 같은 GitHub 레포인 체크아웃을 읽기 전용 git 으로 탐색, 1분 캐시) + `prs[]`(number, title, isDraft, headRefName, baseRefName, author, updatedAt, url, additions, deletions, changedFiles) + `branches[]`(내가 푸시했고 PR 이 한 건도 없는 브랜치, 최근 30일: name, committedDate, headline, oid, url(PR 생성 링크), worktreePath, worktreeId. `gh api graphql` query, 5분 캐시, 열린 PR 의 head 는 제외) |
 | `POST /api/overview/refresh` | — | overview | 캐시 무시 재조회 |
 | `GET /api/context` | `?path=<worktreePath>` | `{ repoPath, branch, baseCandidates: string[], defaultBase: string, worktreeId, repoDisplayName }` | baseCandidates = `origin/HEAD` 해석값, `origin/main`, `origin/dev`, `origin/master`, `main`, `dev`, `master` 중 존재하는 것 |
 | `POST /api/sessions` | `{ kind:'local', repoPath, baseRef, includeUntracked?, agent? }` 또는 `{ kind:'pr', owner, repo, number }` | `ReviewSession` | local: 같은 repoPath+baseRef 의 `completed` 아닌 세션이 있으면 그것을 반환(멱등). pr: 같은 owner/repo/number 재사용 |
@@ -245,7 +246,7 @@ activate(ctx):
 
 ## Out of Scope (1차)
 
-split diff, 파일별 확인 완료, 세션 내보내기, Orca 에이전트 터미널로 프롬프트 전송(헤드리스 실행이 기본), GitHub Enterprise, 자동 commit/push, PR 생성.
+split diff, 파일별 확인 완료, 세션 내보내기, Orca 에이전트 터미널로 프롬프트 전송(헤드리스 실행이 기본), GitHub Enterprise, 자동 commit/push(수동 버튼 "커밋 & 푸시"만 제공), PR 생성.
 
 
 ## 패널 네이티브 설계 (v2)

@@ -16,8 +16,11 @@ function git(cwd, ...args) {
   return execFileSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' } })
 }
 
+// A private parent dir: the overview looks for unregistered clones next to registered repos, and a shared tmpdir holds thousands of unrelated dirs.
+const parentDir = realpathSync(mkdtempSync(join(tmpdir(), 'sr-parent-')))
+
 function makeRepo() {
-  const repo = realpathSync(mkdtempSync(join(tmpdir(), 'sr-repo-')))
+  const repo = realpathSync(mkdtempSync(join(parentDir, 'sr-repo-')))
   git(repo, 'init', '-q', '-b', 'main')
   writeFileSync(join(repo, 'a.js'), 'const a = 1\nconst b = 2\nexport { a }\n')
   git(repo, 'add', '.')
@@ -30,6 +33,14 @@ function makeRepo() {
 }
 
 const repo = makeRepo()
+// A standalone clone of the same GitHub repo that is NOT registered in Orca (like ~/Desktop/.../greeting-GRT-10568).
+const clone = realpathSync(mkdtempSync(join(parentDir, 'sr-clone-')))
+git(clone, 'init', '-q', '-b', 'main')
+git(clone, 'remote', 'add', 'origin', 'https://github.com/o/demo.git')
+writeFileSync(join(clone, 'a.js'), 'const a = 1\n')
+git(clone, 'add', '.')
+git(clone, 'commit', '-q', '-m', 'init')
+git(clone, 'checkout', '-q', '-b', 'feat/pushed-only')
 const homeDir = mkdtempSync(join(tmpdir(), 'sr-home-'))
 const promptOut = join(homeDir, 'prompt-received.md')
 const execCalls = []
@@ -40,6 +51,12 @@ const runners = {
     if (command.endsWith('git')) return execCommand(command, args, options)
     if (command.endsWith('orca') && args[0] === 'repo') return { stdout: JSON.stringify({ ok: true, result: { repos: [{ id: 'r1', path: repo, displayName: 'demo', gitRemoteIdentity: { remoteUrl: 'https://github.com/o/demo.git' } }] } }), stderr: '', code: 0 }
     if (command.endsWith('orca') && args[0] === 'worktree') return { stdout: JSON.stringify({ ok: true, result: { worktrees: [{ id: `r1::${repo}`, repoId: 'r1', path: repo, branch: 'refs/heads/feat/x', displayName: 'feat/x' }] } }), stderr: '', code: 0 }
+    if (command.endsWith('gh') && args[1] === 'graphql') {
+      const query = String(args.find((arg) => arg.startsWith('query=')) ?? '')
+      if (query.includes('viewer')) return { stdout: JSON.stringify({ data: { viewer: { login: 'me' } } }), stderr: '', code: 0 }
+      const node = (name) => ({ name, associatedPullRequests: { totalCount: 0 }, target: { oid: `o-${name}`, committedDate: new Date().toISOString(), messageHeadline: 'pushed', author: { email: 'm@e', user: { login: 'me' } }, committer: { email: 'm@e', user: { login: 'me' } } } })
+      return { stdout: JSON.stringify({ data: { repository: { defaultBranchRef: { name: 'main' }, refs: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [node('feat/pushed-only'), node('feat/x')] } } } }), stderr: '', code: 0 }
+    }
     if (command.endsWith('gh') && args[1] === 'list') return { stdout: JSON.stringify([{ number: 1, title: 'PR one', isDraft: true, headRefName: 'feat/x', baseRefName: 'main', author: { login: 'me' }, updatedAt: 'x', url: 'u', additions: 1, deletions: 0, changedFiles: 1 }]), stderr: '', code: 0 }
     if (command.endsWith('gh') && args[1] === 'view') return { stdout: JSON.stringify({ number: 1, title: 'PR one', body: 'hi', isDraft: true, author: { login: 'me' }, baseRefName: 'main', headRefName: 'feat/x', headRefOid: 'sha', url: 'u', additions: 1, deletions: 0, changedFiles: 1, updatedAt: 'x', state: 'OPEN' }), stderr: '', code: 0 }
     if (command.endsWith('gh') && args[1] === 'diff') return { stdout: 'diff --git a/a.js b/a.js\n--- a/a.js\n+++ b/a.js\n@@ -1 +1 @@\n-const a = 1\n+const a = 2\n', stderr: '', code: 0 }
@@ -129,7 +146,14 @@ test('overview aggregates orca repos, worktrees and read-only gh PR lists', asyn
   assert.equal(overview.body.repos[0].worktrees[0].branch, 'feat/x')
   assert.equal(overview.body.repos[0].prs[0].isDraft, true)
   assert.equal(overview.body.github.enabled, true)
-  assert.ok(execCalls.every(([command, ...args]) => !command.endsWith('gh') || ['list', 'view', 'diff'].includes(args[1])), 'only read-only gh commands')
+  assert.deepEqual(overview.body.repos[0].branches.map((branch) => branch.name), ['feat/pushed-only'], 'my pushed branch without a PR is listed; feat/x is hidden because it has an open PR')
+  assert.equal(overview.body.repos[0].branches[0].worktreePath, clone, 'the unregistered clone that has it checked out is linked, so it can be reviewed')
+  const unregistered = overview.body.repos[0].worktrees.filter((entry) => entry.unregistered)
+  assert.deepEqual(unregistered.map((entry) => [entry.path, entry.branch, entry.worktreeId]), [[clone, 'feat/pushed-only', null]], 'sibling clone is listed with the registered worktrees (this feeds the select box)')
+  assert.equal(overview.body.repos[0].worktrees[0].unregistered, undefined, 'registered worktrees are not flagged')
+  assert.match(overview.body.repos[0].branches[0].url, /\/pull\/new\/feat\/pushed-only$/)
+  const readOnlyGraphql = (args) => args[0] === 'api' && args[1] === 'graphql' && !args.some((arg) => /mutation|subscription/i.test(arg))
+  assert.ok(execCalls.every(([command, ...args]) => !command.endsWith('gh') || ['list', 'view', 'diff'].includes(args[1]) || readOnlyGraphql(args)), 'only read-only gh commands')
 })
 
 test('pr detail and pr session', async () => {

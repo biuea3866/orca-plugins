@@ -9,6 +9,12 @@ import { ApiError, SessionStore, summarizeSession, writeJsonAtomic } from './lib
 import { GitReader, readRepoFileLines } from './lib/git.mjs'
 import { OrcaReader } from './lib/orca.mjs'
 import { GitHubReader, parseGitHubRemote } from './lib/github.mjs'
+import { branchCards } from './lib/branches.mjs'
+import { discoverSiblingClones } from './lib/clones.mjs'
+import { applyFullFiles } from './lib/full-file.mjs'
+import { buildAnswerPrompt, selectAnswerableThreads, parseAnswers, newNonce } from './lib/answers.mjs'
+import { publishRun } from './lib/publish.mjs'
+import { snapshotThreads, historyForSession, runBelongsToSession, summarizeRun, capChanges, buildExchanges, SNAPSHOT_MAX_BYTES, DETAIL_PANEL_MAX_BYTES, SUMMARY_MAX_CHARS, EMBEDDED_DIFF_RUNS, EMBEDDED_DIFF_MAX_BYTES, EMBEDDED_FILE_MAX_BYTES } from './lib/run-history.mjs'
 import { RunManager, defaultAgentCommands, pickRunToShow, filterIgnoredChanges } from './lib/runs.mjs'
 import { annotateThreads } from './lib/anchor.mjs'
 import { buildPrompt, selectRunnableThreads } from './lib/prompt.mjs'
@@ -21,6 +27,8 @@ import { BridgeKeeper } from './lib/bridge-keeper.mjs'
 import { installLauncher } from '../worker/launcher-lib.mjs'
 
 export const PROTOCOL_VERSION = 1
+/** All sessions' AI-run history rows together in the panel data. */
+const HISTORY_PANEL_MAX_BYTES = 250 * 1024
 const CONTENT_TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.json': 'application/json; charset=utf-8' }
 const PLACEHOLDER_HTML = '<!doctype html><html><head><meta charset="utf-8"><title>Local Self Review</title></head><body><p>UI files are missing (ui/index.html).</p></body></html>'
 
@@ -65,7 +73,8 @@ export function createServer({
   panelDebounceMs = 150,
   panelRoot = pluginRoot,
   bridgeMaintenanceMs = 60_000,
-  runProgressMs = 10_000
+  runProgressMs = 10_000,
+  panelStaleCheckMs = 15_000
 }) {
   if (enrichEnvironment) enrichPath(process.env)
   mkdirSync(homeDir, { recursive: true, mode: 0o700 })
@@ -80,13 +89,21 @@ export function createServer({
     agentCommands: agentCommands ?? defaultAgentCommands((name) => resolveBin(name)),
     git,
     now,
-    onFinished: (run) => { try { store.setStatus(run.sessionId, 'rechecking') } catch { /* session gone */ } publishPanel('run-finished') },
+    onFinished: async (run) => {
+      if (run.mode === 'answer') applyAnswers(run)
+      else { try { store.setStatus(run.sessionId, 'rechecking') } catch { /* session gone */ } }
+      publishPanel('run-finished')
+      // The diff snapshot comes after the status flip and the first refresh: the card must not wait for git.
+      if (run.mode !== 'answer') { await recordFixOutcome(run); publishPanel('run-history') }
+    },
     ignoreChangedPaths: [join(panelRoot, 'panel.html')]
   })
   const startedAt = now()
   const bridgesPath = join(homeDir, 'runtime', 'bridges.json')
   const bridges = readBridges(bridgesPath)            // worktreePath → { terminalIds: string[], registeredAt }
+  let pinnedWorktree = null                            // worktree picked by hand: the panel iframe forgets it when remounted
   const viewState = {}                                 // sessionId → { route, file, scroll }
+  const historySelection = {}                          // sessionId → id of the past AI run opened in the history screen
   let lastOverview = null
   let runPollTimer = null
   const launcherPath = join(homeDir, 'bin', 'open-review')
@@ -103,6 +120,18 @@ export function createServer({
 
   async function inventory() {
     return orca.inventory()
+  }
+
+  // Scanning the parent dir costs two git calls per checkout, so keep the result for a minute (refresh bypasses it).
+  const CLONE_SCAN_TTL_MS = 60_000
+  let cloneScan = { key: '', at: 0, value: [] }
+  async function siblingClones({ repos, worktrees, force }) {
+    const key = [...repos.map((repo) => repo.path), '|', ...worktrees.map((worktree) => worktree.path)].sort().join('\n')
+    if (!force && cloneScan.key === key && Date.now() - cloneScan.at < CLONE_SCAN_TTL_MS) return cloneScan.value
+    let value = []
+    try { value = await discoverSiblingClones({ repos, worktrees, git }) } catch { value = [] }
+    cloneScan = { key, at: Date.now(), value }
+    return value
   }
 
   async function findWorktree(path) {
@@ -147,7 +176,8 @@ export function createServer({
   }
 
   async function overview({ force = false } = {}) {
-    const { repos, worktrees, error } = await inventory()
+    const { repos, worktrees: registeredWorktrees, error } = await inventory()
+    const worktrees = [...registeredWorktrees, ...(await siblingClones({ repos, worktrees: registeredWorktrees, force }))]
     const errors = []
     if (error) errors.push({ repo: '(orca)', message: error })
     let lastFetchedAt = null
@@ -156,19 +186,23 @@ export function createServer({
     for (const repo of repos) {
       const target = parseGitHubRemote(repo.remoteUrl)
       let prs = []
+      let branches = []
       if (target && ghAvailable) {
-        const result = await github.listOpenPullRequests(target, { force })
+        const [result, mine] = await Promise.all([github.listOpenPullRequests(target, { force }), github.listMyBranchesWithoutPr(target, { force })])
         prs = result.prs
+        branches = branchCards({ repoId: repo.id, branches: mine.branches, prs, worktrees })
         if (result.error) errors.push({ repo: repo.displayName, message: result.error })
-        if (result.fetchedAt && (!lastFetchedAt || result.fetchedAt > lastFetchedAt)) lastFetchedAt = result.fetchedAt
+        if (mine.error && mine.error !== result.error) errors.push({ repo: repo.displayName, message: `내 브랜치 조회 실패: ${mine.error}` })
+        for (const fetchedAt of [result.fetchedAt, mine.fetchedAt]) if (fetchedAt && (!lastFetchedAt || fetchedAt > lastFetchedAt)) lastFetchedAt = fetchedAt
       }
       repoCards.push({
         id: repo.id,
         path: repo.path,
         displayName: repo.displayName,
         github: target,
-        worktrees: worktrees.filter((entry) => entry.repoId === repo.id).map((entry) => ({ worktreeId: entry.id, path: entry.path, branch: entry.branch, displayName: entry.displayName })),
-        prs
+        worktrees: worktrees.filter((entry) => entry.repoId === repo.id).map((entry) => ({ worktreeId: entry.id, path: entry.path, branch: entry.branch, displayName: entry.displayName, ...(entry.unregistered ? { unregistered: true } : {}) })),
+        prs,
+        branches
       })
     }
     return { repos: repoCards, sessions: store.listSessions(), github: { enabled: ghAvailable, lastFetchedAt: lastFetchedAt ? new Date(lastFetchedAt).toISOString() : null, errors } }
@@ -203,24 +237,98 @@ export function createServer({
     return null
   }
 
+  /**
+   * "커밋 & 푸시": the server (never the AI) commits what a fix run changed and pushes it, on the user's explicit request.
+   * The outcome is kept on the run so the panel can show the pushed commit, or why it failed and what to do.
+   */
+  const publishing = new Set()
+  async function publishFixRun(runId) {
+    const run = runs.get(runId)
+    if (publishing.has(runId)) throw new ApiError(409, 'publish_in_progress', 'this run is already being committed and pushed')
+    publishing.add(runId)
+    try {
+      const session = store.getSession(run.sessionId)
+      const result = await publishRun({ exec, gitBinary: resolveBin('git') ?? 'git', run, session })
+      const latest = runs.get(runId)
+      latest.published = { commit: result.commit, branch: result.branch, remote: result.remote, at: now() }
+      delete latest.publishError
+      runs.save(latest)
+      return result
+    } catch (error) {
+      if (error instanceof ApiError && error.code !== 'not_publishable') {
+        const latest = runs.get(runId)
+        latest.publishError = { code: error.code, message: error.message, commit: error.extra?.commit ?? null, at: now() }
+        runs.save(latest)
+      }
+      throw error
+    } finally {
+      publishing.delete(runId)
+      publishPanel('publish')
+    }
+  }
+
+  /**
+   * What a fix run leaves for the history: the diff it made (the live diff vanishes once the change is committed) and
+   * what the AI reported back at the end of its output.
+   */
+  async function recordFixOutcome(run) {
+    try {
+      const latest = runs.get(run.id)
+      const changed = latest.changedFiles || []
+      let savedDiff = false
+      if (changed.length && latest.cwd && existsSync(latest.cwd)) {
+        try {
+          const files = capChanges(trimFilesForPanel(await git.workingTreeChangesFor(latest.cwd, changed)), { maxBytes: SNAPSHOT_MAX_BYTES })
+          runs.saveChanges(latest.id, files)
+          savedDiff = true
+        } catch { /* the history then simply has no diff for this run */ }
+      }
+      const fresh = runs.get(latest.id) // git took a while: do not overwrite anything saved meanwhile
+      if (savedDiff) fresh.hasChanges = true
+      fresh.summary = runs.readLog(fresh.id, 0).log.trim().slice(-SUMMARY_MAX_CHARS)
+      runs.save(fresh)
+    } catch { /* the run record vanished */ }
+  }
+
+  /** An answer run is done: turn the agent's answer blocks into AI comments on the threads that were asked about. */
+  function applyAnswers(run) {
+    try {
+      const latest = runs.get(run.id)
+      let added = []
+      if (latest.status === 'succeeded') {
+        const { answers } = parseAnswers({ text: runs.readLog(latest.id).log, threadIds: latest.threadIds, nonce: latest.nonce })
+        const entries = Object.entries(answers).map(([threadId, answer]) => ({ threadId, body: answer, agent: latest.agent, runId: latest.id }))
+        latest.answers = entries.map(({ threadId, body }) => ({ threadId, body: body.slice(0, 4000) })) // kept with the run: the history groups them under the request
+        try { added = store.appendAiComments(latest.sessionId, entries).added } catch { /* session gone */ }
+      }
+      latest.answered = added
+      latest.unanswered = latest.threadIds.filter((threadId) => !added.includes(threadId))
+      runs.save(latest)
+    } catch { /* the run record vanished: nothing to attach to */ }
+  }
+
   async function startRun(sessionId, body) {
     const session = store.withRevision(sessionId, body.revision)
     const agent = body.agent ?? session.agent
     if (agent !== 'claude' && agent !== 'codex') throw new ApiError(400, 'invalid_field', 'agent must be claude or codex')
+    const mode = body.mode ?? 'fix'
+    if (mode !== 'fix' && mode !== 'answer') throw new ApiError(400, 'invalid_field', 'mode must be fix or answer')
     if (!session.repoPath || !existsSync(session.repoPath)) throw new ApiError(400, 'worktree_missing', 'this session has no local worktree to run an agent in')
     const diff = await sessionDiff(session)
     annotateThreads(diff.files, session.threads)
-    const threads = selectRunnableThreads(session.threads)
-    if (threads.length === 0) throw new ApiError(400, 'no_runnable_threads', 'no open, up-to-date threads to send to the agent')
+    const threads = mode === 'answer' ? selectAnswerableThreads(session.threads) : selectRunnableThreads(session.threads)
+    if (threads.length === 0) throw new ApiError(400, 'no_runnable_threads', mode === 'answer' ? 'no open, up-to-date threads waiting for an answer' : 'no open, up-to-date threads to send to the agent')
+    const nonce = newNonce()
     let prompt
     try {
-      prompt = buildPrompt({ session, threads, readFileLines: (relativePath) => readRepoFileLines(session.repoPath, relativePath) })
+      const readFileLines = (relativePath) => readRepoFileLines(session.repoPath, relativePath)
+      prompt = mode === 'answer' ? buildAnswerPrompt({ session, threads, readFileLines, nonce }) : buildPrompt({ session, threads, readFileLines })
     } catch (error) {
       throw new ApiError(400, 'prompt_too_large', error.message)
     }
-    const run = await runs.start({ session, threadIds: threads.map((thread) => thread.id), agent, prompt })
+    const run = await runs.start({ session, threadIds: threads.map((thread) => thread.id), agent, prompt, mode, nonce, meta: { branch: session.branch ?? null, threadSnapshots: snapshotThreads(threads) } })
     session.agent = agent
-    session.status = 'fixing'
+    if (mode === 'fix') session.status = 'fixing'
     store.save(session)
     return run
   }
@@ -273,6 +381,14 @@ export function createServer({
     if (changed) publishPanel('bridge')
   }
 
+  // Self-heal: a git checkout/commit in the plugin folder can replace panel.html with the committed baseline.
+  let staleTimer = null
+  function scheduleStaleCheck() {
+    if (!panelStaleCheckMs || staleTimer) return
+    staleTimer = setInterval(() => { if (publisher.isStale()) publishPanel('heal') }, panelStaleCheckMs)
+    staleTimer.unref?.()
+  }
+
   function scheduleBridgeMaintenance() {
     if (!bridgeMaintenanceMs || bridgeTimer) return
     bridgeTimer = setInterval(() => { maintainBridges().catch(() => {}) }, bridgeMaintenanceMs)
@@ -288,7 +404,12 @@ export function createServer({
         const detail = await sessionDetail(summary.id)
         let baseCandidates = []
         if (detail.session.kind === 'local' && detail.session.repoPath) { try { baseCandidates = await git.baseCandidates(detail.session.repoPath) } catch { baseCandidates = [] } }
-        sessions[summary.id] = { session: detail.session, diff: { ...detail.diff, files: trimFilesForPanel(detail.diff.files) }, baseCandidates }
+        const session = detail.session
+        // Files the user expanded to "whole file" carry every line; PR sessions have no checkout to read them from.
+        const files = session.kind === 'local' && session.repoPath
+          ? await applyFullFiles({ files: detail.diff.files, fullPaths: viewState[summary.id]?.fullFiles, load: (file) => git.fullContextFile(session.repoPath, { baseRef: session.baseRef, includeUntracked: session.includeUntracked, includeWorkingTree: session.includeWorkingTree, path: file.path, oldPath: file.oldPath ?? undefined }) })
+          : detail.diff.files
+        sessions[summary.id] = { session, diff: { ...detail.diff, files: trimFilesForPanel(files) }, baseCandidates }
       } catch (error) {
         let baseCandidates = []
         const session = store.getSession(summary.id)
@@ -309,7 +430,50 @@ export function createServer({
       if (run.status !== 'running' && run.status !== 'queued' && run.changedFiles.length && run.cwd && existsSync(run.cwd)) {
         try { aiChanges = trimFilesForPanel(await git.workingTreeChangesFor(run.cwd, run.changedFiles)) } catch (error) { aiChanges = { error: error.message } }
       }
-      runsBySession[run.sessionId] = { ...run, fingerprintsBefore: undefined, logTail: log.slice(-PANEL_LOG_TAIL_BYTES), aiChanges }
+      runsBySession[run.sessionId] = { ...run, fingerprintsBefore: undefined, nonce: undefined, logTail: log.slice(-PANEL_LOG_TAIL_BYTES), aiChanges }
+    }
+    // History of every AI run per session (light rows), plus the one past run the reviewer opened (diff, threads, log).
+    const runHistory = {}
+    const runDetail = {}
+    let historyBytes = 0
+    let diffBytes = 0
+    const trimmedIds = new Set()
+    const rawRuns = new Map(runList.map((entry) => [entry.id, entry]))
+    for (const summary of sessionList) {
+      if (summary.kind !== 'local' || summary.status === 'completed') continue
+      const fullSession = sessions[summary.id]?.session
+      // A row is one request: its question threads with the answers they got. The newest fix runs also carry their diff,
+      // so opening them is a local toggle in the panel (every bridge op round trip costs seconds and steals focus).
+      let embeddedDiffs = 0
+      const rows = historyForSession({ runs: runList, session: summary }).map((row) => {
+        const entry = { ...row, threads: buildExchanges({ run: rawRuns.get(row.id), session: fullSession }) }
+        if (row.mode === 'fix' && row.hasChanges && embeddedDiffs < EMBEDDED_DIFF_RUNS && diffBytes < EMBEDDED_DIFF_MAX_BYTES) {
+          entry.aiChanges = capChanges(runs.readChanges(row.id) ?? [], { maxBytes: EMBEDDED_FILE_MAX_BYTES })
+          embeddedDiffs += 1
+          diffBytes += JSON.stringify(entry.aiChanges).length
+        }
+        return entry
+      })
+      if (rows.length === 0) continue
+      // Over budget: light rows only; an opened run then brings its threads along with the diff and log.
+      let kept = rows
+      if (historyBytes + JSON.stringify(rows).length > HISTORY_PANEL_MAX_BYTES) {
+        kept = rows.map(({ threads, aiChanges, ...light }) => { trimmedIds.add(light.id); return { ...light, threads: null } })
+      }
+      runHistory[summary.id] = kept
+      historyBytes += JSON.stringify(kept).length
+      const openId = historySelection[summary.id]
+      const picked = openId ? runList.find((entry) => entry.id === openId && runBelongsToSession(entry, summary)) : null
+      if (picked) {
+        runDetail[summary.id] = {
+          ...summarizeRun(picked),
+          runId: picked.id,
+          ...(trimmedIds.has(picked.id) ? { threads: buildExchanges({ run: picked, session: fullSession }) } : {}),
+          aiChanges: capChanges(runs.readChanges(picked.id) ?? [], { maxBytes: DETAIL_PANEL_MAX_BYTES }),
+          logTail: runs.readLog(picked.id, 0).log.slice(-PANEL_LOG_TAIL_BYTES),
+          publishError: picked.publishError ?? null
+        }
+      }
     }
     if (reason !== 'run-progress' || !lastOverview) {
       try { lastOverview = await overview() } catch (error) { lastOverview = { repos: [], sessions: sessionList, github: { enabled: false, lastFetchedAt: null, errors: [{ repo: '(orca)', message: error.message }] } } }
@@ -321,6 +485,7 @@ export function createServer({
       path: worktree.path,
       branch: worktree.branch,
       displayName: worktree.displayName,
+      unregistered: worktree.unregistered === true,
       repoDisplayName: repo.displayName,
       sessionId: sessionList.find((session) => session.kind === 'local' && session.status !== 'completed' && session.repoPath === worktree.path)?.id ?? null,
       bridgeTerminalIds: bridges[worktree.path]?.terminalIds ?? []
@@ -336,7 +501,10 @@ export function createServer({
       sessions: fitSessionsToBudget(sessions, viewState, { budgetBytes: Math.floor(PANEL_DATA_MAX_BYTES * 0.6) }),
       sessionList,
       runs: runsBySession,
+      runHistory,
+      runDetail,
       overview: { repos: lastOverview.repos, github: lastOverview.github },
+      pinnedWorktree,
       viewState
     }
   }
@@ -348,8 +516,21 @@ export function createServer({
       case 'ping': return { ok: true }
       case 'view': {
         const previous = viewState[op.sessionId]
-        viewState[op.sessionId] = { route: op.route ?? 'review', file: op.file ?? null, scroll: Number.isFinite(op.scroll) ? op.scroll : 0 }
+        viewState[op.sessionId] = { route: op.route ?? 'review', file: op.file ?? null, scroll: Number.isFinite(op.scroll) ? op.scroll : 0, ...(previous?.fullFiles ? { fullFiles: previous.fullFiles } : {}) }
         if (op.file && op.file !== previous?.file && op.loadFile) publishPanel('view-file')
+        return { ok: true }
+      }
+      case 'file.full': {
+        store.getSession(op.sessionId)
+        const previous = viewState[op.sessionId] ?? { route: 'review', file: null, scroll: 0 }
+        const others = (previous.fullFiles ?? []).filter((path) => path !== op.path)
+        viewState[op.sessionId] = { ...previous, ...(op.full ? { file: op.path } : {}), fullFiles: op.full ? [...others, op.path] : others }
+        publishPanel('full-file')
+        return { ok: true }
+      }
+      case 'worktree.pin': {
+        pinnedWorktree = op.worktreePath
+        publishPanel('pin')
         return { ok: true }
       }
       case 'session.open': {
@@ -361,7 +542,7 @@ export function createServer({
       }
       case 'session.patch': { const result = store.updateSession(op.sessionId, op); publishPanel('session'); return result }
       case 'session.complete': { const session = store.getSession(op.sessionId); const result = store.updateSession(op.sessionId, { revision: session.revision, status: 'completed' }); publishPanel('session'); return result }
-      case 'session.delete': { store.deleteSession(op.sessionId); delete viewState[op.sessionId]; publishPanel('session'); return { ok: true } }
+      case 'session.delete': { store.deleteSession(op.sessionId); delete viewState[op.sessionId]; delete historySelection[op.sessionId]; publishPanel('session'); return { ok: true } }
       case 'thread.add': {
         const result = store.addThread(op.sessionId, op)
         viewState[op.sessionId] = { ...(viewState[op.sessionId] ?? { route: 'review', scroll: 0 }), file: op.path, anchor: { path: op.path, side: op.side, endLine: op.endLine } }
@@ -381,6 +562,18 @@ export function createServer({
       case 'comment.delete': { const result = store.deleteComment(op.sessionId, op.threadId, op.commentId, op); publishPanel('thread'); return result }
       case 'run.start': { const run = await startRun(op.sessionId, op); ensureRunPolling(); publishPanel('run'); return run }
       case 'run.cancel': { const run = runs.cancel(op.runId); publishPanel('run'); return run }
+      case 'run.view': {
+        const session = store.getSession(op.sessionId)
+        if (op.runId === null) delete historySelection[op.sessionId]
+        else {
+          const run = runs.get(op.runId)
+          if (!runBelongsToSession(run, session)) throw new ApiError(404, 'run_not_found', `run ${op.runId} is not part of this session's history`)
+          historySelection[op.sessionId] = op.runId
+        }
+        publishPanel('run-view')
+        return { ok: true }
+      }
+      case 'run.publish': return publishFixRun(op.runId)
       case 'overview.refresh': { lastOverview = await overview({ force: true }); publishPanel('overview'); return { ok: true } }
       case 'wide': {
         const session = store.getSession(op.sessionId)
@@ -564,6 +757,7 @@ export function createServer({
     await publisher.flush('start')
     if (runs.hasRunning()) ensureRunPolling()
     scheduleBridgeMaintenance()
+    scheduleStaleCheck()
     if (bridgeMaintenanceMs) maintainBridges().catch(() => {})
     return port
   }
@@ -572,6 +766,7 @@ export function createServer({
     if (idleTimer) clearInterval(idleTimer)
     if (runPollTimer) clearInterval(runPollTimer)
     if (bridgeTimer) clearInterval(bridgeTimer)
+    if (staleTimer) clearInterval(staleTimer)
     removeRuntimeFile()
     if (!httpServer) return
     await new Promise((resolveClose) => { httpServer.closeAllConnections?.(); httpServer.close(() => resolveClose()) })

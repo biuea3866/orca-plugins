@@ -223,6 +223,27 @@ export class SessionStore {
     return this.save(session)
   }
 
+  /**
+   * Adds AI answers to threads. Deliberately not revision-checked: the answer arrives minutes after the request, by
+   * which time the reviewer has usually edited the session, and a stale revision must not throw the answer away.
+   */
+  appendAiComments(sessionId, entries) {
+    const session = this.getSession(sessionId)
+    const added = []
+    const skipped = []
+    for (const { threadId, body, agent, runId } of entries) {
+      const thread = session.threads.find((candidate) => candidate.id === threadId)
+      if (!thread) { skipped.push(threadId); continue }
+      const text = typeof body === 'string' ? body.trim() : ''
+      if (!text) continue
+      const timestamp = this.now()
+      thread.comments.push({ id: makeId('cmt'), body: text.length > MAX_COMMENT_LENGTH ? `${text.slice(0, MAX_COMMENT_LENGTH - 1)}…` : text, author: 'ai', agent, runId, createdAt: timestamp, updatedAt: timestamp })
+      added.push(threadId)
+    }
+    if (added.length > 0) this.save(session)
+    return { added, skipped }
+  }
+
   findComment(thread, commentId) {
     const comment = thread.comments.find((candidate) => candidate.id === commentId)
     if (!comment) throw new ApiError(404, 'comment_not_found', `comment ${commentId} not found`)

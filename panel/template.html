@@ -6,27 +6,28 @@
 <style>
   :root { color-scheme: light dark; --sr-add: rgba(46, 160, 67, .18); --sr-del: rgba(248, 81, 73, .18); --sr-sel: rgba(255, 204, 0, .28); --sr-hunk: rgba(56, 139, 253, .12); }
   html, body { margin: 0; padding: 0; background: var(--background); color: var(--foreground); }
-  body { font: 12.5px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  body { font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
   * { box-sizing: border-box; }
   button, select, textarea, input { font: inherit; color: inherit; }
-  .btn { border: 1px solid var(--border); background: var(--secondary); color: var(--secondary-foreground); border-radius: var(--radius, 6px); padding: 3px 8px; cursor: pointer; font-size: 12px; }
+  .btn { border: 1px solid var(--border); background: var(--secondary); color: var(--secondary-foreground); border-radius: var(--radius, 6px); padding: 3px 8px; cursor: pointer; font-size: 14px; }
   .btn.primary { background: var(--primary); color: var(--primary-foreground); border-color: transparent; font-weight: 600; }
   .btn.danger { background: var(--destructive); color: var(--destructive-foreground); border-color: transparent; }
   .btn.ghost { background: transparent; }
+  .btn.mono { white-space: normal; overflow-wrap: anywhere; text-align: left; max-width: 100%; }
   .btn:disabled { opacity: .45; cursor: default; }
   .btn:focus-visible, select:focus-visible, textarea:focus-visible, .gutter:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
   select { background: var(--background); border: 1px solid var(--input); border-radius: var(--radius, 6px); padding: 2px 6px; max-width: 100%; }
   textarea { width: 100%; min-height: 64px; background: var(--background); border: 1px solid var(--input); border-radius: var(--radius, 6px); padding: 6px; resize: vertical; }
   .muted { color: var(--muted-foreground); }
-  .small { font-size: 11px; }
-  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; }
+  .small { font-size: 13px; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 14px; }
   .row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-  .badge { display: inline-block; font-size: 10.5px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--border); background: var(--accent); color: var(--accent-foreground); white-space: nowrap; }
+  .badge { display: inline-block; font-size: 12px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--border); background: var(--accent); color: var(--accent-foreground); white-space: nowrap; }
   .badge.warn { background: var(--sr-sel); border-color: transparent; }
   .card { background: var(--card); color: var(--card-foreground); border: 1px solid var(--border); border-radius: var(--radius, 6px); margin: 8px; }
   .card-head { padding: 6px 10px; border-bottom: 1px solid var(--border); font-weight: 600; display: flex; align-items: center; gap: 6px; }
   .card-body { padding: 6px 10px; }
-  .notice { margin: 8px; padding: 6px 10px; border-radius: var(--radius, 6px); background: var(--sr-sel); color: var(--foreground); font-size: 12px; }
+  .notice { margin: 8px; padding: 6px 10px; border-radius: var(--radius, 6px); background: var(--sr-sel); color: var(--foreground); font-size: 14px; }
   .notice.error { background: var(--sr-del); }
   .topbar { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: 6px; padding: 6px 8px; background: var(--card); border-bottom: 1px solid var(--border); }
   .topbar .title { font-weight: 700; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -35,14 +36,14 @@
   .tab.active { background: var(--card); border-color: var(--border); color: var(--foreground); font-weight: 600; }
   .list-item { display: flex; align-items: center; gap: 6px; padding: 4px 0; border-top: 1px solid var(--border); }
   .list-item:first-child { border-top: 0; }
-  .list-item .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .list-item .grow { flex: 1; min-width: 0; overflow-wrap: anywhere; white-space: normal; }
   .pr-title { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .file-item { display: flex; align-items: center; gap: 6px; padding: 3px 6px; border-radius: 4px; cursor: pointer; }
   .file-item:hover { background: var(--accent); }
   .file-item.active { background: var(--accent); font-weight: 600; }
   .file-item .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
-  .diff { width: 100%; border-collapse: collapse; table-layout: fixed; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; line-height: 18px; }
-  .diff col.g { width: 44px; } .diff col.m { width: 12px; }
+  .diff { width: 100%; border-collapse: collapse; table-layout: fixed; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 14px; line-height: 22px; }
+  .diff col.g { width: 52px; } .diff col.m { width: 14px; }
   .diff td { padding: 0; vertical-align: top; }
   .diff .gutter { text-align: right; padding-right: 5px; color: var(--muted-foreground); user-select: none; cursor: pointer; background: var(--card); white-space: nowrap; }
   .diff .gutter.disabled { cursor: default; opacity: .4; }
@@ -51,37 +52,43 @@
   .diff .code { white-space: pre-wrap; word-break: break-all; padding: 0 6px; }
   .diff tr.add .code, .diff tr.add .marker { background: var(--sr-add); }
   .diff tr.del .code, .diff tr.del .marker { background: var(--sr-del); }
-  .diff tr.hunk td { background: var(--sr-hunk); color: var(--muted-foreground); padding: 1px 6px; font-size: 10.5px; }
+  .diff tr.hunk td { background: var(--sr-hunk); color: var(--muted-foreground); padding: 1px 6px; font-size: 12px; }
   .diff tr.selected .code, .diff tr.selected .marker, .diff tr.selected .gutter { background: var(--sr-sel) !important; }
-  .diff tr.thread-row td { padding: 6px 6px 6px 10px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 12px; }
+  .diff tr.thread-row td { padding: 6px 6px 6px 10px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px; }
   .thread { border: 1px solid var(--border); border-radius: var(--radius, 6px); background: var(--popover); color: var(--popover-foreground); margin: 4px 0; }
-  .thread-head { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-bottom: 1px solid var(--border); font-size: 11px; color: var(--muted-foreground); flex-wrap: wrap; }
+  .thread-head { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-bottom: 1px solid var(--border); font-size: 13px; color: var(--muted-foreground); flex-wrap: wrap; }
   .thread-head .grow { flex: 1; }
   .thread.pending { opacity: .75; border-style: dashed; }
   .comment.pending { opacity: .75; }
   .thread.resolved .thread-body { display: none; }
   .thread.resolved.expanded .thread-body { display: block; }
+  .comment.ai { border-left: 3px solid #8957e5; padding-left: 6px; background: color-mix(in srgb, var(--card) 92%, #8957e5 8%); }
+  .comment.ai .body { white-space: pre-wrap; }
   .comment { padding: 6px 8px; border-bottom: 1px solid var(--border); }
   .comment:last-of-type { border-bottom: 0; }
-  .comment .meta { font-size: 10.5px; color: var(--muted-foreground); display: flex; gap: 6px; align-items: center; }
+  .comment .meta { font-size: 12px; color: var(--muted-foreground); display: flex; gap: 6px; align-items: center; }
   .comment .meta .grow { flex: 1; }
   .comment .body { white-space: pre-wrap; word-break: break-word; margin-top: 2px; }
   .form { padding: 6px 8px; }
   .form .actions { display: flex; gap: 6px; justify-content: flex-end; margin-top: 4px; }
   .file-block { margin: 0 8px 10px; border: 1px solid var(--border); border-radius: var(--radius, 6px); overflow: hidden; background: var(--background); }
   .file-block.collapsed .file-head { border-bottom: 0; }
-  .file-head { position: sticky; top: 34px; z-index: 5; padding: 4px 6px; background: var(--card); border-bottom: 1px solid var(--border); display: flex; gap: 6px; align-items: center; }
+  .file-head { position: sticky; top: 38px; z-index: 5; padding: 4px 6px; background: var(--card); border-bottom: 1px solid var(--border); display: flex; gap: 6px; align-items: center; }
   .file-head .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
   .run { margin: 8px; border: 1px solid var(--border); border-radius: var(--radius, 6px); background: var(--card); }
   .run.live { border-color: var(--primary); }
+  .history-row { cursor: pointer; flex-wrap: wrap; padding: 6px 4px; }
+  .history-row:hover, .history-row.open { background: var(--accent); }
+  .history-thread { padding: 4px 0; border-top: 1px solid var(--border); }
+  .history-thread:first-child { border-top: 0; }
   .spinner { display: inline-block; width: 10px; height: 10px; border: 2px solid var(--border); border-top-color: var(--primary); border-radius: 50%; animation: sr-spin .8s linear infinite; margin-right: 4px; }
   @keyframes sr-spin { to { transform: rotate(360deg); } }
-  .run pre { margin: 0; max-height: 160px; overflow: auto; padding: 6px 8px; font-size: 11px; white-space: pre-wrap; word-break: break-word; background: var(--background); }
+  .run pre { margin: 0; max-height: 160px; overflow: auto; padding: 6px 8px; font-size: 13px; white-space: pre-wrap; word-break: break-word; background: var(--background); }
   details summary { cursor: pointer; color: var(--muted-foreground); }
   .add-count { color: #2ea043; } .del-count { color: #f85149; }
   .files-collapsed .file-list-body { display: none; }
   .empty { padding: 14px 10px; color: var(--muted-foreground); text-align: center; }
-  .kbd { font-family: ui-monospace, monospace; font-size: 10px; border: 1px solid var(--border); border-radius: 3px; padding: 0 3px; }
+  .kbd { font-family: ui-monospace, monospace; font-size: 12px; border: 1px solid var(--border); border-radius: 3px; padding: 0 3px; }
 </style>
 </head>
 <body>
@@ -100,22 +107,26 @@
 'use strict'
 /*__INLINE:selection__*/
 /*__INLINE:threads__*/
+/*__INLINE:confirm__*/
+/*__INLINE:pin__*/
 
 // ------------------------------------------------------------------ data
-const TEMPLATE_VERSION = 'v17'
+const TEMPLATE_VERSION = 'v27'
 let DATA = JSON.parse(document.getElementById('orca-panel-data').textContent || '{}')
 const PREVIEW = window.parent === window                       // opened in a normal browser (server /panel-preview)
 const PREVIEW_TOKEN = document.querySelector('meta[name="sr-token"]')?.content ?? null
 let CONTEXT = null                                             // { displayName, branch, terminals: [{id}] }
 let ROUTE = 'review'                                            // 'review' | 'overview'
 let ACTIVE_WORKTREE = null                                      // worktree entry from DATA.worktrees
-const UI = { dismissedRun: null, lastRunStatus: {}, focusCandidate: null, runLogOpen: false, pendingThreads: [], pendingReplies: {}, sending: false, collapsedFiles: new Set(), filesCollapsed: true, file: null, selection: null, dragging: false, pendingForm: false, expanded: new Set(), draft: '', drafts: {}, scrollRestored: false, picker: null, lastMessage: '' }
+const UI = { dismissedRun: null, lastRunStatus: {}, focusCandidate: null, runLogOpen: false, pendingThreads: [], pendingReplies: {}, sending: false, collapsedFiles: new Set(), filesCollapsed: true, file: null, selection: null, dragging: false, pendingForm: false, expanded: new Set(), draft: '', drafts: {}, scrollRestored: false, picker: null, lastMessage: '', historyOpen: undefined, historyLoading: null }
 
 function escapeHtml(value) { return String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char])) }
 class Raw { constructor(html) { this.html = html } }
 const raw = (html) => new Raw(html)
 function h(strings, ...values) { return strings.reduce((out, part, index) => out + part + (index < values.length ? (values[index] instanceof Raw ? values[index].html : escapeHtml(values[index])) : ''), '') }
 function formatTime(iso) { if (!iso) return '—'; const d = new Date(iso); return Number.isNaN(d.getTime()) ? String(iso) : d.toLocaleTimeString() }
+// Time for today, month/day otherwise: a branch pushed days ago must not look like it was pushed today.
+function formatWhen(iso) { if (!iso) return '—'; const d = new Date(iso); if (Number.isNaN(d.getTime())) return String(iso); return d.toDateString() === new Date().toDateString() ? d.toLocaleTimeString() : `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}` }
 function notice(message, isError) { const el = document.getElementById('notice'); el.textContent = message; el.className = 'notice' + (isError ? ' error' : ''); el.hidden = !message; UI.lastMessage = message }
 
 // ------------------------------------------------------------------ host bridge (panel actions)
@@ -179,7 +190,7 @@ async function send(op, { silent = false } = {}) {
     const response = await fetch('/api/bridge', { method: 'POST', headers: { 'X-SR-Token': PREVIEW_TOKEN, 'Content-Type': 'application/json' }, body: JSON.stringify(op) })
     const payload = await response.json().catch(() => null)
     if (!response.ok) throw new Error(payload?.error?.message || ('HTTP ' + response.status))
-    if (op.op !== 'view' || op.loadFile) await previewReload()
+    if ((op.op !== 'view' && op.op !== 'worktree.pin') || op.loadFile) await previewReload()
     return payload?.result
   }
   const terminalId = bridgeTerminalId()
@@ -238,6 +249,8 @@ function hasUnsentWork() { return Boolean(UI.pendingForm || UI.selection || UI.d
 function pickWorktree({ allowAutoSwitch = true } = {}) {
   const worktrees = DATA.worktrees || []
   const focused = matchFocusedWorktree()
+  // A remounted iframe starts empty: take back the hand-picked worktree the server remembered (once, so a later unpin sticks).
+  if (!UI.pinRestored) { UI.pinRestored = true; if (!UI.manualWorktree) UI.manualWorktree = restorePinned(DATA.pinnedWorktree, worktrees) }
   if (UI.manualWorktree) {
     ACTIVE_WORKTREE = worktrees.find((w) => w.path === UI.manualWorktree) || ACTIVE_WORKTREE || focused
   } else if (!ACTIVE_WORKTREE || (allowAutoSwitch && !hasUnsentWork())) {
@@ -292,14 +305,15 @@ function render({ keepScroll = false } = {}) {
     if (UI.focusCandidate && ROUTE === 'review') {
       banner.hidden = false
       banner.innerHTML = h`포커스된 worktree 는 <b>${UI.focusCandidate.repoDisplayName} · ${UI.focusCandidate.branch}</b> 입니다. <button type="button" class="btn small" id="switchToFocused">그 worktree 로 전환</button>${UI.manualWorktree ? raw(' <button type="button" class="btn ghost small" id="unpinWorktree">고정 해제</button>') : ''}`
-      banner.querySelector('#switchToFocused').addEventListener('click', () => { UI.manualWorktree = null; UI.selection = null; UI.pendingForm = false; UI.draft = ''; ACTIVE_WORKTREE = UI.focusCandidate; UI.focusCandidate = null; UI.file = null; render() })
-      banner.querySelector('#unpinWorktree')?.addEventListener('click', () => { UI.manualWorktree = null; pickWorktree(); render() })
+      banner.querySelector('#switchToFocused').addEventListener('click', () => { UI.manualWorktree = null; sendPin(null); UI.selection = null; UI.pendingForm = false; UI.draft = ''; ACTIVE_WORKTREE = UI.focusCandidate; UI.focusCandidate = null; UI.file = null; render() })
+      banner.querySelector('#unpinWorktree')?.addEventListener('click', () => { UI.manualWorktree = null; sendPin(null); pickWorktree(); render() })
     } else banner.hidden = true
   }
   const session = activeSession()
   const viewState = session ? DATA.viewState?.[session.session.id] : null
   if (!UI.file && viewState?.file) UI.file = viewState.file
   if (ROUTE === 'overview') renderOverview()
+  else if (ROUTE === 'history') renderHistory(session)
   else renderReview(session)
   document.getElementById('title').textContent = ACTIVE_WORKTREE ? `${ACTIVE_WORKTREE.repoDisplayName} · ${ACTIVE_WORKTREE.branch}` : 'Self Review'
   restoreDraft()
@@ -317,8 +331,109 @@ function render({ keepScroll = false } = {}) {
   restoreFocus(focus)
 }
 function renderTabs() {
-  document.getElementById('tabs').innerHTML = h`<button type="button" class="tab ${ROUTE === 'review' ? 'active' : ''}" data-route="review">리뷰</button><button type="button" class="tab ${ROUTE === 'overview' ? 'active' : ''}" data-route="overview">전체 PR·세션</button>`
+  const current = activeSession()
+  const historyCount = current ? (DATA.runHistory?.[current.session.id] || []).length : 0
+  document.getElementById('tabs').innerHTML = h`<button type="button" class="tab ${ROUTE === 'review' ? 'active' : ''}" data-route="review">리뷰</button><button type="button" class="tab ${ROUTE === 'history' ? 'active' : ''}" data-route="history">AI 기록${historyCount ? ' (' + historyCount + ')' : ''}</button><button type="button" class="tab ${ROUTE === 'overview' ? 'active' : ''}" data-route="overview">전체 PR·세션</button>`
   for (const tab of document.querySelectorAll('.tab')) tab.addEventListener('pointerdown', (event) => { event.preventDefault(); ROUTE = tab.dataset.route; render({ keepScroll: false }); window.scrollTo(0, 0) })
+}
+
+// ------------------------------------------------------------------ AI run history
+// Every AI run of this worktree, newest first. One run can be opened to see the threads it received, the diff it
+// produced (saved when it finished, so it survives a commit) and the agent output.
+function historyRowHtml(row, openRunId) {
+  const open = row.id === openRunId
+  const when = new Date(row.startedAt)
+  const took = row.endedAt ? formatDuration(new Date(row.endedAt) - when) : '진행 중'
+  const outcome = row.mode === 'answer' ? '답변 ' + row.answeredCount + '/' + row.threadCount + '개' : '변경 파일 ' + row.changedCount + '개'
+  const pushed = row.published ? h` <span class="badge">푸시됨 ${String(row.published.commit).slice(0, 8)}</span>` : ''
+  const failed = row.publishFailed ? ' <span class="badge warn">푸시 실패</span>' : ''
+  const branch = row.branch ? h` <span class="muted small mono">${row.branch}</span>` : ''
+  return h`<div class="list-item history-row ${open ? 'open' : ''}" data-history-run="${row.id}" title="${open ? '눌러서 접기' : '눌러서 자세히 보기'}">
+    <span class="grow"><b>${row.mode === 'answer' ? 'AI 답변' : 'AI 수정'}</b> <span class="badge ${row.status === 'succeeded' ? '' : 'warn'}">${RUN_LABELS[row.status] || row.status}</span>${raw(pushed)}${raw(failed)}
+      <span class="muted small">${row.agent || ''} · ${when.toLocaleString()} · ${took} · 스레드 ${row.threadCount}개 · ${outcome}</span>${raw(branch)}</span>
+    <span class="muted small">${open ? '접기' : '자세히'}</span></div>`
+}
+// One request = one run. Each question thread is shown together with the answer this run gave it.
+function historyThreadsHtml(row) {
+  const threads = row.threads
+  if (threads === null || threads === undefined) return '<div class="card-body small muted">질문 목록이 커서 목록에 싣지 못했습니다. 아래 "불러오기"를 누르세요.</div>'
+  if (!threads.length) return '<div class="card-body small muted">이 실행이 받은 스레드가 남아 있지 않습니다.</div>'
+  const blocks = threads.map((thread, index) => {
+    const range = thread.startLine === thread.endLine ? thread.startLine : thread.startLine + '–' + thread.endLine
+    const question = (thread.comments || []).map((comment) => h`<div class="comment ${comment.author === 'ai' ? 'ai' : ''}"><div class="meta"><span>${comment.author === 'ai' ? 'AI' : '나'}</span></div><div class="body">${comment.body}</div></div>`).join('')
+    let reply = ''
+    if (thread.answer) reply = h`<div class="comment ai"><div class="meta"><span>AI 답변</span></div><div class="body">${thread.answer}</div></div>`
+    else if (row.mode === 'answer' && row.status === 'succeeded') reply = '<div class="comment"><div class="muted small">이 질문에는 답변이 달리지 않았습니다.</div></div>'
+    return h`<div class="history-thread"><div class="mono small">${index + 1}. ${thread.path}:${range}</div>${raw(question)}${raw(reply)}</div>`
+  })
+  return '<div class="card-body">' + blocks.join('') + '</div>'
+}
+function historyDetailHtml(row, extra, loading) {
+  const started = new Date(row.startedAt)
+  const answer = row.mode === 'answer'
+  const result = answer ? '답변 ' + row.answeredCount + '/' + row.threadCount + '개를 스레드에 달았습니다.' : '변경 파일 ' + row.changedCount + '개'
+  let pushed = ''
+  if (row.published) pushed = h`<div style="margin-top:4px"><span class="badge">푸시됨</span> <span class="mono">${String(row.published.commit).slice(0, 8)}</span> → <span class="mono">${row.published.branch}</span></div>`
+  else if (extra && extra.publishError) pushed = h`<div class="notice error" style="margin-top:4px">푸시 실패: ${extra.publishError.message}</div>`
+  const exit = row.exitCode !== null && row.exitCode !== undefined ? ' · exit ' + row.exitCode : ''
+  const branch = row.branch ? ' · ' + row.branch : ''
+  const shown = { ...row, threads: row.threads ?? (extra ? extra.threads : null) }
+  const count = shown.threads ? shown.threads.length : row.threadCount
+  const diff = Array.isArray(row.aiChanges) ? row.aiChanges : extra ? extra.aiChanges : null
+  let diffHtml = ''
+  if (!answer) {
+    if (diff) diffHtml = aiChangesHtml({ aiChanges: diff }, { history: true })
+    else if (row.hasChanges) diffHtml = '<div class="card-body small muted">' + (loading ? '변경 diff 를 불러오는 중…' : '변경 diff 는 아래 "불러오기"를 누르면 보여요.') + '</div>'
+    else diffHtml = '<div class="card-body small muted">저장된 변경 내용이 없습니다 (기록 기능 이전의 실행이거나 변경 파일이 없던 실행).</div>'
+  }
+  const summaryHtml = !answer && row.summary ? h`<div class="card-head" style="border-top:1px solid var(--border)">AI 가 남긴 말</div><div class="card-body"><div class="comment ai"><div class="body">${row.summary}</div></div></div>` : ''
+  let logHtml
+  if (extra) logHtml = h`<details><summary class="small" style="padding:4px 8px">에이전트 출력 로그</summary><pre>${extra.logTail || '(출력 없음)'}</pre></details>`
+  else if (loading) logHtml = '<div class="card-body small muted">불러오는 중…</div>'
+  else logHtml = '<div class="card-body"><button type="button" class="btn small" id="loadHistoryRun">' + (!answer && row.hasChanges && !diff ? '변경 diff·로그 불러오기' : '로그 불러오기') + '</button> <span class="muted small">서버에서 읽어 오므로 잠시 걸려요</span></div>'
+  return h`<div class="run">
+    <div class="card-head">${answer ? 'AI 답변' : 'AI 수정'} <span class="badge ${row.status === 'succeeded' ? '' : 'warn'}">${RUN_LABELS[row.status] || row.status}</span><span class="muted small">${row.agent || ''} · ${started.toLocaleString()}${exit}${branch}</span><span style="flex:1"></span><button type="button" class="btn ghost small" id="closeHistoryRun">닫기</button></div>
+    <div class="card-body small"><div>${result}</div>${raw(pushed)}</div>
+    <div class="card-head" style="border-top:1px solid var(--border)">이 요청의 질문과 답변 <span class="muted small">스레드 ${count}개</span></div>
+    ${raw(historyThreadsHtml(shown))}
+    ${raw(summaryHtml)}
+    ${raw(diffHtml)}
+    ${raw(logHtml)}</div>`
+}
+function renderHistory(session) {
+  if (!session) {
+    app.innerHTML = h`<div class="card" style="margin-top:8px"><div class="card-body muted">리뷰 세션을 먼저 시작하면 AI 실행 기록이 여기에 쌓입니다.</div></div>`
+    return
+  }
+  const s = session.session
+  const rows = DATA.runHistory?.[s.id] || []
+  if (UI.historyOpen === undefined && rows.length) UI.historyOpen = rows[0].id // the newest request is open from the start
+  const openRow = rows.find((row) => row.id === UI.historyOpen) || null
+  const loaded = DATA.runDetail?.[s.id]
+  const extra = openRow && loaded && loaded.runId === openRow.id ? loaded : null
+  if (extra && UI.historyLoading === openRow.id) UI.historyLoading = null
+  const loading = Boolean(openRow) && UI.historyLoading === openRow.id
+  const empty = '<div class="muted small">아직 AI 실행 기록이 없습니다. 리뷰 화면에서 "리뷰 완료 및 AI 수정"이나 "AI 답변 요청"을 실행하면 여기에 남습니다.</div>'
+  const list = rows.map((row) => historyRowHtml(row, UI.historyOpen) + (openRow && row.id === openRow.id ? historyDetailHtml(row, extra, loading) : '')).join('')
+  app.innerHTML = h`
+    <div class="card" style="margin-top:8px">
+      <div class="card-body"><div class="row">${raw(worktreeSwitcherHtml())}<span class="muted small">이 worktree 의 AI 요청 ${rows.length}건 · 최신순 · 눌러서 펼치기</span></div></div>
+      <div class="card-body" style="padding:4px">${raw(rows.length ? list : empty)}</div>
+    </div>`
+  // Opening and closing a request is purely local: no bridge op, so it is instant.
+  for (const item of app.querySelectorAll('[data-history-run]')) {
+    item.addEventListener('click', () => { UI.historyOpen = UI.historyOpen === item.dataset.historyRun ? null : item.dataset.historyRun; render({ keepScroll: true }) })
+  }
+  app.querySelector('#closeHistoryRun')?.addEventListener('click', () => { UI.historyOpen = null; render({ keepScroll: true }) })
+  // Only the heavy parts of an old run (diff, log) come from the server, and only when asked for.
+  app.querySelector('#loadHistoryRun')?.addEventListener('click', () => {
+    const runId = openRow.id
+    UI.historyLoading = runId
+    render({ keepScroll: true })
+    setTimeout(() => { if (UI.historyLoading === runId) { UI.historyLoading = null; render({ keepScroll: true }) } }, 15000)
+    act(() => send({ op: 'run.view', sessionId: s.id, runId }))
+  })
+  bindWorktreeSwitcher()
 }
 
 function renderOverview() {
@@ -328,12 +443,17 @@ function renderOverview() {
   const repoFilter = UI.repoFilter || ''
   const draftOnly = Boolean(UI.draftOnly)
   const rows = prs.filter(({ repo, pr }) => (!repoFilter || repo.id === repoFilter) && (!draftOnly || pr.isDraft))
+  // Branches I pushed that have no PR yet (any remote branch of mine, even from a checkout Orca does not know).
+  const branchRows = overview.repos.flatMap((repo) => (repo.branches || []).map((branch) => ({ repo, branch }))).filter(({ repo }) => !repoFilter || repo.id === repoFilter).sort((a, b) => String(b.branch.committedDate).localeCompare(String(a.branch.committedDate)))
   app.innerHTML = h`
     <div class="card"><div class="card-head">worktree</div><div class="card-body">
-      ${raw((DATA.worktrees || []).length === 0 ? '<div class="muted">Orca에 등록된 worktree가 없습니다.</div>' : (DATA.worktrees || []).map((w) => h`<div class="list-item"><span class="grow"><strong>${w.repoDisplayName}</strong> <span class="mono">${w.branch}</span>${w.sessionId ? raw(' <span class="badge">세션</span>') : ''}${(w.bridgeTerminalIds || []).length ? raw(' <span class="badge">브리지</span>') : ''}</span><button type="button" class="btn small" data-open-worktree="${w.path}">${w.sessionId ? '열기' : '리뷰 시작'}</button></div>`).join(''))}
+      ${raw((DATA.worktrees || []).length === 0 ? '<div class="muted">Orca에 등록된 worktree가 없습니다.</div>' : (DATA.worktrees || []).map((w) => h`<div class="list-item"><span class="grow"><strong>${w.repoDisplayName}</strong> <span class="mono">${w.branch}</span>${w.sessionId ? raw(' <span class="badge">세션</span>') : ''}${w.unregistered ? raw(' <span class="badge warn" title="Orca 에 등록되지 않은 별도 클론입니다. 리뷰는 되지만 Orca 터미널 브리지와 연결되지 않습니다.">Orca 미등록</span>') : ''}${(w.bridgeTerminalIds || []).length ? raw(' <span class="badge">브리지</span>') : ''}</span><button type="button" class="btn small" data-open-worktree="${w.path}">${w.sessionId ? '열기' : '리뷰 시작'}</button></div>`).join(''))}
     </div></div>
     <div class="card"><div class="card-head">로컬 세션 <span class="muted small">${sessions.length}</span></div><div class="card-body">
       ${raw(sessions.length === 0 ? '<div class="muted">아직 세션이 없습니다.</div>' : sessions.map((s) => h`<div class="list-item"><span class="grow"><strong>${s.repoDisplayName}</strong> <span class="mono">${s.branch}</span> <span class="badge">${s.status}</span> <span class="muted small">open ${s.threads.open} · resolved ${s.threads.resolved}</span></span>${s.status !== 'completed' ? raw(h`<button type="button" class="btn small" data-open-session="${s.id}">열기</button>`) : ''}<button type="button" class="btn small danger" data-delete-session="${s.id}">삭제</button></div>`).join(''))}
+    </div></div>
+    <div class="card"><div class="card-head">내 브랜치 · PR 없음 <span class="muted small">${branchRows.length}건 · 최근 30일에 푸시</span></div><div class="card-body">
+      ${raw(branchRows.length === 0 ? '<div class="muted">PR 없이 푸시한 내 브랜치가 없습니다.</div>' : branchRows.map(({ repo, branch }) => h`<div class="list-item" style="flex-direction:column;align-items:stretch;gap:2px"><span class="pr-title"><span class="badge">PR 없음</span> <strong class="mono">${branch.name}</strong></span><span class="muted small">${repo.displayName} · ${formatWhen(branch.committedDate)} · ${branch.headline}</span><span class="row">${branch.worktreePath ? raw(h`<button type="button" class="btn small" data-open-worktree="${branch.worktreePath}">리뷰 시작</button>`) : raw('<span class="muted small">Orca에 등록된 worktree 없음</span>')}<span class="muted small mono" style="user-select:all">${branch.url}</span></span></div>`).join(''))}
     </div></div>
     <div class="card"><div class="card-head">Open PR <span class="muted small">${overview.github.enabled ? (overview.github.lastFetchedAt ? '조회 ' + formatTime(overview.github.lastFetchedAt) : '') : 'gh 없음'}</span></div><div class="card-body">
       ${raw(overview.github.errors?.length ? '<div class="notice" style="margin:0 0 6px">' + overview.github.errors.map((e) => h`<div><strong>${e.repo}</strong>: ${e.message}</div>`).join('') + '</div>' : '')}
@@ -343,9 +463,9 @@ function renderOverview() {
     </div></div>`
   app.querySelector('#repoFilter').addEventListener('change', (e) => { UI.repoFilter = e.target.value; renderOverview() })
   app.querySelector('#draftOnly').addEventListener('change', (e) => { UI.draftOnly = e.target.checked; renderOverview() })
-  for (const button of app.querySelectorAll('[data-open-worktree]')) button.addEventListener('click', () => { UI.manualWorktree = button.dataset.openWorktree; UI.manualContextKey = contextKey(); ACTIVE_WORKTREE = (DATA.worktrees || []).find((w) => w.path === UI.manualWorktree) || null; ROUTE = 'review'; UI.file = null; if (ACTIVE_WORKTREE && !ACTIVE_WORKTREE.sessionId) act(() => send({ op: 'session.open', worktreePath: UI.manualWorktree })); render() })
-  for (const button of app.querySelectorAll('[data-open-session]')) button.addEventListener('click', () => { const s = (DATA.sessionList || []).find((x) => x.id === button.dataset.openSession); UI.manualWorktree = s?.repoPath || null; UI.manualContextKey = contextKey(); ACTIVE_WORKTREE = (DATA.worktrees || []).find((w) => w.path === UI.manualWorktree) || { path: s.repoPath, branch: s.branch, displayName: s.branch, repoDisplayName: s.repoDisplayName, sessionId: s.id, bridgeTerminalIds: [] }; ROUTE = 'review'; UI.file = null; render() })
-  for (const button of app.querySelectorAll('[data-delete-session]')) button.addEventListener('click', () => { if (confirm('세션과 코멘트를 삭제할까요? (로컬에서만)')) act(() => send({ op: 'session.delete', sessionId: button.dataset.deleteSession })) })
+  for (const button of app.querySelectorAll('[data-open-worktree]')) button.addEventListener('click', () => { UI.manualWorktree = button.dataset.openWorktree; UI.manualContextKey = contextKey(); sendPin(UI.manualWorktree); ACTIVE_WORKTREE = (DATA.worktrees || []).find((w) => w.path === UI.manualWorktree) || null; ROUTE = 'review'; UI.file = null; if (ACTIVE_WORKTREE && !ACTIVE_WORKTREE.sessionId) act(() => send({ op: 'session.open', worktreePath: UI.manualWorktree })); render() })
+  for (const button of app.querySelectorAll('[data-open-session]')) button.addEventListener('click', () => { const s = (DATA.sessionList || []).find((x) => x.id === button.dataset.openSession); UI.manualWorktree = s?.repoPath || null; UI.manualContextKey = contextKey(); sendPin(UI.manualWorktree); ACTIVE_WORKTREE = (DATA.worktrees || []).find((w) => w.path === UI.manualWorktree) || { path: s.repoPath, branch: s.branch, displayName: s.branch, repoDisplayName: s.repoDisplayName, sessionId: s.id, bridgeTerminalIds: [] }; ROUTE = 'review'; UI.file = null; render() })
+  for (const button of app.querySelectorAll('[data-delete-session]')) button.addEventListener('click', () => { if (armConfirm(button, { message: '세션과 코멘트를 삭제할까요? (로컬에서만) 한 번 더 누르면 삭제됩니다' }) === 'confirmed') act(() => send({ op: 'session.delete', sessionId: button.dataset.deleteSession })) })
 }
 
 function renderReview(session) {
@@ -380,6 +500,7 @@ function renderReview(session) {
       </div>
       <div class="row" style="margin-top:6px">
         <select id="agent">${raw(['claude', 'codex'].map((name) => h`<option value="${name}" ${raw(s.agent === name ? 'selected' : '')} ${raw(agents[name]?.available ? '' : 'disabled')}>${name}${agents[name]?.available ? '' : ' (없음)'}</option>`).join(''))}</select>
+        <button type="button" class="btn" id="runAnswer" ${raw(!agents[s.agent]?.available || live || awaitingCount(s) === 0 ? 'disabled' : '')} title="내가 단 질문 코멘트에 AI 가 같은 스레드에 답글로 답합니다 (코드는 수정하지 않습니다)">AI 답변 요청 (${awaitingCount(s)})</button>
         <button type="button" class="btn primary" id="runFix" ${raw(canRun ? '' : 'disabled')} title="${!agents[s.agent]?.available ? s.agent + ' CLI 없음' : runnable === 0 ? '열려 있고 최신인 스레드 없음' : live ? '실행 중' : ''}">리뷰 완료 및 AI 수정 (${runnable})</button>
         <button type="button" class="btn small" id="completeSession">완료</button>
       </div>
@@ -395,9 +516,11 @@ function renderReview(session) {
   app.querySelector('#baseRef')?.addEventListener('change', (e) => act(() => send({ op: 'session.patch', sessionId: s.id, revision: s.revision, baseRef: e.target.value })))
   app.querySelector('#workingTree')?.addEventListener('change', (e) => act(() => send({ op: 'session.patch', sessionId: s.id, revision: s.revision, includeWorkingTree: e.target.checked })))
   app.querySelector('#untracked')?.addEventListener('change', (e) => act(() => send({ op: 'session.patch', sessionId: s.id, revision: s.revision, includeUntracked: e.target.checked })))
+  app.querySelector('#runAnswer').addEventListener('click', () => act(() => send({ op: 'run.start', sessionId: s.id, revision: s.revision, agent: s.agent, mode: 'answer' })))
   app.querySelector('#runFix').addEventListener('click', () => act(() => send({ op: 'run.start', sessionId: s.id, revision: s.revision, agent: s.agent })))
-  app.querySelector('#completeSession').addEventListener('click', () => { const open = s.threads.filter((t) => t.status === 'open').length; if (open === 0 || confirm(`열린 스레드가 ${open}개 남아 있습니다. 완료할까요?`)) act(() => send({ op: 'session.complete', sessionId: s.id })) })
+  app.querySelector('#completeSession').addEventListener('click', () => { const open = s.threads.filter((t) => t.status === 'open').length; if (open === 0 || armConfirm(app.querySelector('#completeSession'), { armedLabel: `열린 ${open}개 · 그래도 완료`, message: `열린 스레드가 ${open}개 남아 있습니다. 한 번 더 누르면 완료합니다` }) === 'confirmed') act(() => send({ op: 'session.complete', sessionId: s.id })) })
   app.querySelector('#cancelRun')?.addEventListener('click', (e) => act(() => send({ op: 'run.cancel', runId: e.currentTarget.dataset.run })))
+  app.querySelector('#publishRun')?.addEventListener('click', (e) => { const button = e.currentTarget; if (armConfirm(button, { armedLabel: '정말 push', message: s.branch + ' 브랜치에 이 실행이 바꾼 파일을 커밋하고 push 합니다. 한 번 더 누르면 실행됩니다' }) === 'confirmed') act(() => send({ op: 'run.publish', runId: button.dataset.run })) })
   app.querySelector('#runLog')?.addEventListener('toggle', (e) => { UI.runLogOpen = e.target.open })
   app.querySelector('#dismissRun')?.addEventListener('click', () => { UI.dismissedRun = run.id; render({ keepScroll: true }) })
   for (const b of app.querySelectorAll('[data-jump-file]')) b.addEventListener('click', () => { const path = b.dataset.jumpFile; UI.collapsedFiles.delete(path); refreshFile(path); document.getElementById(fileDomId(path))?.scrollIntoView({ block: 'start' }) })
@@ -420,12 +543,13 @@ function renderReview(session) {
 
 function worktreeSwitcherHtml() {
   const worktrees = DATA.worktrees || []
-  return h`<select id="worktreeSwitch" title="worktree 선택">${raw(worktrees.map((w) => h`<option value="${w.path}" ${raw(ACTIVE_WORKTREE && w.path === ACTIVE_WORKTREE.path ? 'selected' : '')}>${w.repoDisplayName} · ${w.branch}${w.sessionId ? ' ●' : ''}</option>`).join(''))}</select>`
+  return h`<select id="worktreeSwitch" title="worktree 선택">${raw(worktrees.map((w) => h`<option value="${w.path}" ${raw(ACTIVE_WORKTREE && w.path === ACTIVE_WORKTREE.path ? 'selected' : '')}>${w.repoDisplayName} · ${w.branch}${w.sessionId ? ' ●' : ''}${w.unregistered ? ' · Orca 미등록' : ''}</option>`).join(''))}</select>`
 }
 function bindWorktreeSwitcher() {
   app.querySelector('#worktreeSwitch')?.addEventListener('change', (event) => {
     UI.manualWorktree = event.target.value
     UI.manualContextKey = contextKey()
+    sendPin(UI.manualWorktree)
     ACTIVE_WORKTREE = (DATA.worktrees || []).find((w) => w.path === UI.manualWorktree) || ACTIVE_WORKTREE
     UI.file = null; UI.selection = null; UI.pendingForm = false
     render()
@@ -440,23 +564,38 @@ function runCardHtml(run) {
   const ended = run.endedAt ? new Date(run.endedAt) : null
   const changed = run.changedFiles || []
   return h`<div class="run ${live ? 'live' : ''}">
-    <div class="card-head">${live ? raw('<span class="spinner"></span>') : ''}AI 수정 <span class="badge ${live ? 'warn' : ''}">${RUN_LABELS[run.status] || run.status}</span><span class="muted small">${run.agent} · 스레드 ${run.threadIds.length}개 · <span id="runElapsed" data-started="${run.startedAt}" data-ended="${run.endedAt || ''}">${formatDuration((ended || new Date()) - started)}</span>${run.exitCode !== null && run.exitCode !== undefined ? ' · exit ' + run.exitCode : ''}</span><span style="flex:1"></span>${live ? raw(h`<button type="button" class="btn small danger" id="cancelRun" data-run="${run.id}">취소</button>`) : raw('<button type="button" class="btn ghost small" id="dismissRun">닫기</button>')}</div>
-    ${live ? raw(h`<div class="card-body small muted">${run.agent} 가 코멘트대로 코드를 고치는 중입니다. 끝나면 이 카드가 "완료"로 바뀌고 diff 가 자동 갱신됩니다. 시작 ${started.toLocaleTimeString()}</div>`) : ''}
-    ${!live ? raw(h`<div class="card-body small"><div>${run.status === 'succeeded' ? '에이전트가 작업을 마쳤습니다.' : run.status === 'failed' ? '에이전트가 오류로 끝났습니다 (로그 확인).' : run.status === 'cancelled' ? '취소되었습니다.' : '서버 재시작으로 추적이 끊겼습니다.'} ${started.toLocaleTimeString()} → ${ended ? ended.toLocaleTimeString() : '—'}</div>
+    <div class="card-head">${live ? raw('<span class="spinner"></span>') : ''}${run.mode === 'answer' ? 'AI 답변' : 'AI 수정'} <span class="badge ${live ? 'warn' : ''}">${RUN_LABELS[run.status] || run.status}</span><span class="muted small">${run.agent} · 스레드 ${run.threadIds.length}개 · <span id="runElapsed" data-started="${run.startedAt}" data-ended="${run.endedAt || ''}">${formatDuration((ended || new Date()) - started)}</span>${run.exitCode !== null && run.exitCode !== undefined ? ' · exit ' + run.exitCode : ''}</span><span style="flex:1"></span>${live ? raw(h`<button type="button" class="btn small danger" id="cancelRun" data-run="${run.id}">취소</button>`) : raw('<button type="button" class="btn ghost small" id="dismissRun">닫기</button>')}</div>
+    ${live ? raw(h`<div class="card-body small muted">${run.mode === 'answer' ? run.agent + ' 가 질문을 읽고 답변을 쓰는 중입니다. 끝나면 답변이 스레드에 달립니다 (코드는 수정하지 않습니다).' : run.agent + ' 가 코멘트대로 코드를 고치는 중입니다. 끝나면 이 카드가 "완료"로 바뀌고 diff 가 자동 갱신됩니다.'} 시작 ${started.toLocaleTimeString()}</div>`) : ''}
+    ${!live && run.mode === 'answer' ? raw(answerResultHtml(run)) : ''}
+    ${!live && run.mode !== 'answer' ? raw(h`<div class="card-body small"><div>${run.status === 'succeeded' ? '에이전트가 작업을 마쳤습니다.' : run.status === 'failed' ? '에이전트가 오류로 끝났습니다 (로그 확인).' : run.status === 'cancelled' ? '취소되었습니다.' : '서버 재시작으로 추적이 끊겼습니다.'} ${started.toLocaleTimeString()} → ${ended ? ended.toLocaleTimeString() : '—'}</div>
       <div style="margin-top:4px"><strong>변경 파일 ${changed.length}개</strong>${changed.length ? '' : ' — 파일 변경이 감지되지 않았습니다. 로그에서 사유를 확인하세요.'}</div>
       ${raw(changed.map((path) => h`<div><button type="button" class="btn ghost small mono" data-jump-file="${path}">${path}</button></div>`).join(''))}
-      <div class="muted" style="margin-top:4px">AI 의 수정은 <b>아직 커밋되지 않은 작업 트리 변경</b>이라 PR 기준 diff 에는 나타나지 않습니다. 아래 "AI 가 바꾼 내용"에서 확인하고, 괜찮으면 커밋하세요. 이 실행의 대상 스레드에는 <span class="badge">AI 실행 포함</span> 표시가 붙습니다.</div></div>
+      <div class="muted" style="margin-top:4px">AI 의 수정은 <b>아직 커밋되지 않은 작업 트리 변경</b>이라 PR 기준 diff 에는 나타나지 않습니다. 아래 "AI 가 바꾼 내용"에서 확인하고, 괜찮으면 아래 "커밋 &amp; 푸시"를 누르거나 직접 커밋하세요. 이 실행의 대상 스레드에는 <span class="badge">AI 실행 포함</span> 표시가 붙습니다.</div>${raw(publishHtml(run))}</div>
     ${raw(aiChangesHtml(run))}`) : ''}
     <details id="runLog" ${raw(UI.runLogOpen ? 'open' : '')}><summary class="small" style="padding:4px 8px">로그${live ? ' (10초마다 갱신)' : ''}</summary><pre>${run.logTail || '(아직 출력 없음)'}</pre></details></div>`
 }
-function aiChangesHtml(run) {
+// Commit + push of what an AI fix run changed. The server does it (not the AI), only after the button is pressed twice.
+function publishHtml(run) {
+  const changed = (run.changedFiles || []).length
+  if (run.published) return h`<div style="margin-top:6px"><span class="badge">푸시됨</span> <span class="mono">${String(run.published.commit).slice(0, 8)}</span> → <span class="mono">${run.published.branch}</span></div>`
+  if (run.status !== 'succeeded' || !changed) return ''
+  const error = run.publishError ? h`<div class="notice error" style="margin:6px 0">${run.publishError.message}${run.publishError.commit ? ' — 로컬 커밋 ' + String(run.publishError.commit).slice(0, 8) + ' 은 남아 있습니다. 같은 버튼으로 push 만 다시 시도하거나 직접 push 하세요.' : ''}</div>` : ''
+  return error + h`<div style="margin-top:6px"><button type="button" class="btn primary small" id="publishRun" data-run="${run.id}">커밋 &amp; 푸시 (파일 ${changed}개)</button> <span class="muted small">이 실행이 바꾼 파일만 커밋해 현재 브랜치에 push 합니다 (두 번 눌러 확정)</span></div>`
+}
+function answerResultHtml(run) {
+  const total = (run.threadIds || []).length
+  const answered = (run.answered || []).length
+  const text = run.status === 'succeeded' ? '답변 ' + answered + '/' + total + '개를 스레드에 달았습니다.' + (answered < total ? ' 일부는 답변을 만들지 못했습니다. 로그를 확인하세요.' : '') : run.status === 'failed' ? '에이전트가 오류로 끝났습니다 (로그 확인).' : run.status === 'cancelled' ? '취소되었습니다.' : '서버 재시작으로 추적이 끊겼습니다.'
+  return h`<div class="card-body small"><div>${text}</div></div>`
+}
+function aiChangesHtml(run, { history = false } = {}) {
   const changes = run.aiChanges
   if (!changes) return ''
   if (changes.error) return h`<div class="card-body small muted">AI 변경 내용을 읽지 못했습니다: ${changes.error}</div>`
-  if (!changes.length) return '<div class="card-body small muted">변경 파일이 기록됐지만 현재 작업 트리에서는 차이가 없습니다 (이미 커밋했거나 되돌린 경우).</div>'
+  if (!changes.length) return history ? '<div class="card-body small muted">저장된 변경 내용이 없습니다 (기록 기능 이전의 실행이거나 변경 파일이 없던 실행).</div>' : '<div class="card-body small muted">변경 파일이 기록됐지만 현재 작업 트리에서는 차이가 없습니다 (이미 커밋했거나 되돌린 경우).</div>'
   const blocks = changes.map((file) => {
     const rows = []
-    if (file.binary || file.truncated || !file.hunks.length) rows.push('<div class="empty">' + (file.binary ? '바이너리 파일' : '패널에 표시하기엔 큽니다 — "넓게" 로 보세요.') + '</div>')
+    if (file.binary || file.truncated || !file.hunks.length) rows.push('<div class="empty">' + (file.binary ? '바이너리 파일' : history ? '크기가 커서 기록에 diff 를 싣지 못했습니다.' : '패널에 표시하기엔 큽니다 — "넓게" 로 보세요.') + '</div>')
     else {
       rows.push('<table class="diff"><colgroup><col class="g"><col class="m"><col></colgroup><tbody>')
       for (const hunk of file.hunks) {
@@ -470,7 +609,7 @@ function aiChangesHtml(run) {
     }
     return h`<div class="file-block" data-ai-file="${file.path}"><div class="file-head" style="position:static"><span class="name mono" title="${file.path}">${file.path}</span><span class="badge">${file.changeType}</span><span class="small"><span class="add-count">+${file.additions}</span> <span class="del-count">−${file.deletions}</span></span></div>${raw(rows.join(''))}</div>`
   })
-  return '<div class="card-head" style="border-top:1px solid var(--border)">AI 가 바꾼 내용 <span class="muted small">HEAD 대비 작업 트리 · 파일 ' + changes.length + '개 · 커밋 전</span></div><div style="padding:6px 0">' + blocks.join('') + '</div>'
+  return '<div class="card-head" style="border-top:1px solid var(--border)">AI 가 바꾼 내용 <span class="muted small">' + (history ? '실행 직후 기록 · 파일 ' + changes.length + '개' : 'HEAD 대비 작업 트리 · 파일 ' + changes.length + '개 · 커밋 전') + '</span></div><div style="padding:6px 0">' + blocks.join('') + '</div>'
 }
 let runTicker = null
 function startRunTicker(run) {
@@ -521,6 +660,19 @@ function bindBridgePicker() {
 
 function fileDomId(path) { return 'file-' + String(path).replace(/[^a-zA-Z0-9_-]/g, (c) => '_' + c.charCodeAt(0).toString(16)) }
 
+// Threads where the reviewer's comment is the latest word: open, up to date, and not already answered by the AI.
+function awaitingCount(session) {
+  return session.threads.filter((thread) => thread.status === 'open' && thread.applicability === 'current' && thread.comments[thread.comments.length - 1]?.author !== 'ai').length
+}
+
+// "전체 보기": the whole file as context instead of a few lines around each change. Only for local sessions and
+// files that exist on both sides (added/deleted/untracked files are already shown completely).
+function fullToggleHtml(session, file) {
+  if (session.kind !== 'local' || file.binary || (file.changeType !== 'modified' && file.changeType !== 'renamed')) return ''
+  const failed = file.fullContextError ? h`<span class="badge warn" title="${file.fullContextError}">전체 보기 실패</span>` : ''
+  return failed + h`<button type="button" class="btn ghost small" data-full-toggle="${file.path}" data-full="${file.fullContext ? '0' : '1'}" title="${file.fullContext ? '변경된 부분만 보기' : '파일 전체 코드 보기'}">${file.fullContext ? '변경점만' : '전체 보기'}</button>`
+}
+
 function fileBlockHtml(session, file) {
   const { session: s } = session
   const canComment = Boolean(PREVIEW || bridgeTerminalId())
@@ -530,7 +682,7 @@ function fileBlockHtml(session, file) {
   const out = []
   const add = (x) => { out[out.length] = x }
   add(h`<div class="file-block ${collapsed ? 'collapsed' : ''}" id="${fileDomId(file.path)}" data-file-block="${file.path}">`)
-  add(h`<div class="file-head"><button type="button" class="btn ghost small" data-toggle-file="${file.path}" title="${collapsed ? '펼치기' : '접기'}">${collapsed ? '▸' : '▾'}</button><span class="name mono" title="${file.path}">${file.path}${file.oldPath ? raw(h`<span class="muted"> ← ${file.oldPath}</span>`) : ''}</span><span class="badge">${file.changeType}</span><span class="small"><span class="add-count">+${file.additions}</span> <span class="del-count">−${file.deletions}</span>${threads.length ? ' 💬' + threads.length : ''}</span></div>`)
+  add(h`<div class="file-head"><button type="button" class="btn ghost small" data-toggle-file="${file.path}" title="${collapsed ? '펼치기' : '접기'}">${collapsed ? '▸' : '▾'}</button><span class="name mono" title="${file.path}">${file.path}${file.oldPath ? raw(h`<span class="muted"> ← ${file.oldPath}</span>`) : ''}</span>${raw(fullToggleHtml(s, file))}<span class="badge">${file.changeType}</span><span class="small"><span class="add-count">+${file.additions}</span> <span class="del-count">−${file.deletions}</span>${threads.length ? ' 💬' + threads.length : ''}</span></div>`)
   if (!collapsed) {
     if (file.binary || file.truncated || !file.hunks.length) {
       add(h`<div class="empty">${file.binary ? '바이너리 파일' : file.panelTruncated ? '이 파일의 diff 는 아직 패널에 실리지 않았습니다.' : file.truncated ? 'diff가 20,000줄을 초과합니다.' : '표시할 hunk 없음'}${file.panelTruncated ? raw(h`<div style="margin-top:6px"><button type="button" class="btn primary small" data-load-file="${file.path}">이 파일 불러오기</button></div>`) : ''}</div>`)
@@ -563,6 +715,7 @@ function fileBlockHtml(session, file) {
 function bindFileBlock(host, session) {
   const { session: s } = session
   for (const b of host.querySelectorAll('[data-toggle-file]')) b.addEventListener('click', () => { const path = b.dataset.toggleFile; if (UI.collapsedFiles.has(path)) UI.collapsedFiles.delete(path); else UI.collapsedFiles.add(path); refreshFile(path) })
+  for (const b of host.querySelectorAll('[data-full-toggle]')) b.addEventListener('click', () => act(() => send({ op: 'file.full', sessionId: s.id, path: b.dataset.fullToggle, full: b.dataset.full === '1' })))
   for (const b of host.querySelectorAll('[data-load-file]')) b.addEventListener('click', () => act(() => send({ op: 'view', sessionId: s.id, route: ROUTE, file: b.dataset.loadFile, scroll: window.scrollY, loadFile: true })))
   bindThreadHandlers(host, s)
 }
@@ -614,7 +767,7 @@ function threadHtml(thread) {
   }
   return h`<div class="thread ${thread.status === 'resolved' ? 'resolved' : ''} ${expanded ? 'expanded' : ''}" data-thread="${thread.id}">
     <div class="thread-head"><span class="badge">${thread.status === 'open' ? '열림' : '해결'}</span>${thread.applicability === 'outdated' ? raw('<span class="badge warn" title="현재 diff에서 원문을 찾지 못함">outdated</span>') : ''}${handledByAi ? raw('<span class="badge" title="마지막 AI 실행의 대상 스레드 — 결과는 실행 카드의 \'AI 가 바꾼 내용\' 참고">AI 실행 포함</span>') : ''}<span class="mono">${thread.side} ${range}</span><span class="grow"></span>${thread.status === 'resolved' ? raw(h`<button type="button" class="btn ghost small" data-toggle="${thread.id}">${expanded ? '접기' : '펼치기'}</button>`) : ''}<button type="button" class="btn small" ${raw(busy)} data-thread-status="${thread.status === 'open' ? 'resolved' : 'open'}" data-thread="${thread.id}">${thread.status === 'open' ? '해결' : '다시 열기'}</button><button type="button" class="btn small danger" ${raw(busy)} data-thread-delete="${thread.id}">삭제</button></div>
-    <div class="thread-body">${raw(thread.comments.map((c) => h`<div class="comment" data-comment="${c.id}"><div class="meta"><span>나</span><span>${formatTime(c.createdAt)}</span><span class="grow"></span><button type="button" class="btn ghost small" ${raw(busy)} data-comment-edit="${c.id}" data-thread="${thread.id}">수정</button><button type="button" class="btn ghost small" ${raw(busy)} data-comment-delete="${c.id}" data-thread="${thread.id}">삭제</button></div><div class="body">${c.body}</div></div>`).join(''))}
+    <div class="thread-body">${raw(thread.comments.map((c) => h`<div class="comment${c.author === 'ai' ? ' ai' : ''}" data-comment="${c.id}"><div class="meta"><span>${c.author === 'ai' ? 'AI · ' + (c.agent || '') : '나'}</span><span>${formatTime(c.createdAt)}</span><span class="grow"></span>${c.author === 'ai' ? '' : raw(h`<button type="button" class="btn ghost small" ${raw(busy)} data-comment-edit="${c.id}" data-thread="${thread.id}">수정</button>`)}<button type="button" class="btn ghost small" ${raw(busy)} data-comment-delete="${c.id}" data-thread="${thread.id}">삭제</button></div><div class="body">${c.body}</div></div>`).join(''))}
       ${raw(pendingReplies.map((body) => h`<div class="comment pending"><div class="meta"><span>나</span><span class="badge warn">전송 중…</span></div><div class="body">${body}</div></div>`).join(''))}
       <div class="form"><textarea rows="2" placeholder="답글…" data-reply-text="${thread.id}"></textarea><div class="actions"><button type="button" class="btn primary small" ${raw(busy)} data-reply="${thread.id}">답글</button></div></div></div></div>`
 }
@@ -663,7 +816,7 @@ function bindThreadHandlers(host, s) {
   }
   for (const b of host.querySelectorAll('[data-toggle]')) b.addEventListener('click', () => { const id = b.dataset.toggle; if (UI.expanded.has(id)) UI.expanded.delete(id); else UI.expanded.add(id); render({ keepScroll: true }) })
   for (const b of host.querySelectorAll('[data-thread-status]')) b.addEventListener('click', () => act(() => send({ op: 'thread.patch', sessionId: s.id, revision: s.revision, threadId: b.dataset.thread, status: b.dataset.threadStatus })))
-  for (const b of host.querySelectorAll('[data-thread-delete]')) b.addEventListener('click', () => { if (confirm('스레드를 삭제할까요?')) act(() => send({ op: 'thread.delete', sessionId: s.id, revision: s.revision, threadId: b.dataset.threadDelete })) })
+  for (const b of host.querySelectorAll('[data-thread-delete]')) b.addEventListener('click', () => { if (armConfirm(b, { message: '스레드를 삭제할까요? 한 번 더 누르면 삭제됩니다' }) === 'confirmed') act(() => send({ op: 'thread.delete', sessionId: s.id, revision: s.revision, threadId: b.dataset.threadDelete })) })
   for (const b of host.querySelectorAll('[data-reply]')) b.addEventListener('click', () => {
     const threadId = b.dataset.reply
     const ta = host.querySelector(`[data-reply-text="${threadId}"]`)
@@ -683,7 +836,7 @@ function bindThreadHandlers(host, s) {
       notice(error.message, true)
     })
   })
-  for (const b of host.querySelectorAll('[data-comment-delete]')) b.addEventListener('click', () => { if (confirm('코멘트를 삭제할까요?')) act(() => send({ op: 'comment.delete', sessionId: s.id, revision: s.revision, threadId: b.dataset.thread, commentId: b.dataset.commentDelete })) })
+  for (const b of host.querySelectorAll('[data-comment-delete]')) b.addEventListener('click', () => { if (armConfirm(b, { message: '코멘트를 삭제할까요? 한 번 더 누르면 삭제됩니다' }) === 'confirmed') act(() => send({ op: 'comment.delete', sessionId: s.id, revision: s.revision, threadId: b.dataset.thread, commentId: b.dataset.commentDelete })) })
   for (const b of host.querySelectorAll('[data-comment-edit]')) b.addEventListener('click', () => {
     const commentEl = host.querySelector(`[data-comment="${b.dataset.commentEdit}"] .body`)
     const thread = s.threads.find((t) => t.id === b.dataset.thread)
@@ -749,6 +902,12 @@ function restoreDraft() {
   for (const el of document.querySelectorAll('[data-reply-text]')) if (UI.drafts[el.dataset.replyText]) el.value = UI.drafts[el.dataset.replyText]
 }
 let viewTimer = null
+// Remember (or forget) the hand-picked worktree on the server so it survives the iframe being remounted.
+// Best effort: without a bridge terminal there is nowhere to send it, and that must not pop the bridge picker.
+function sendPin(worktreePath) {
+  if (!PREVIEW && !bridgeTerminalId()) return
+  send({ op: 'worktree.pin', worktreePath }, { silent: true }).catch(() => {})
+}
 function sendView(sessionId) {
   if (!sessionId) return
   clearTimeout(viewTimer)

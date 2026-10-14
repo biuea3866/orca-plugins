@@ -9,6 +9,7 @@ import runpy
 import shutil
 import subprocess
 import sys
+import time
 
 from bridge import publish, render
 
@@ -31,6 +32,8 @@ shutil.copy2(source / 'orca-plugin.json', plugin / 'orca-plugin.json')
 shutil.copy2(source / 'bridge.py', runtime / 'bridge.py')
 shutil.copy2(source / 'progress.py', runtime / 'progress.py')
 shutil.copy2(source / 'navigation.js', runtime / 'navigation.js')
+for name in ['inquiries.py', 'topics.py', 'work_log.py', 'topic-ui.js', 'dashboard-ui.js', 'dashboard-ui.css', 'llm_usage.py', 'llm-ui.js', 'llm-ui.css', 'live-ui.js']:
+    shutil.copy2(source / name, runtime / name)
 collector = runtime / 'collector.py'
 shutil.copy2(source / 'collector.py', collector)
 module = runpy.run_path(str(collector))
@@ -55,6 +58,11 @@ with plist_path.open('wb') as file:
     plistlib.dump(spec, file)
 domain = f'gui/{os.getuid()}'
 subprocess.run(['launchctl', 'bootout', f'{domain}/{LABEL}'], capture_output=True)
+# bootout can return before launchd has removed the old service registration.
+for _ in range(50):
+    if subprocess.run(['launchctl', 'print', f'{domain}/{LABEL}'], capture_output=True).returncode != 0:
+        break
+    time.sleep(0.1)
 subprocess.run(['launchctl', 'bootstrap', domain, str(plist_path)], check=True)
 print(f'Plugin development folder: {plugin}')
 print(f'Login service: {LABEL}')

@@ -15,11 +15,14 @@ export function defaultAgentCommands(resolveBin) {
     claude: {
       command: resolveBin('claude'),
       args: ['-p', '--output-format', 'text', '--permission-mode', 'acceptEdits', '--allowedTools', 'Read', 'Edit', 'Write', 'MultiEdit', 'Grep', 'Glob', 'LS'],
+      // "AI 답변": read-only. Nothing that edits or runs commands is allowed, and the default permission mode cannot prompt in -p.
+      answerArgs: ['-p', '--output-format', 'text', '--permission-mode', 'default', '--allowedTools', 'Read', 'Grep', 'Glob', 'LS', '--disallowedTools', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Bash'],
       env: {}
     },
     codex: {
       command: resolveBin('codex'),
       args: (cwd) => ['exec', '--full-auto', '--skip-git-repo-check', '-C', cwd, '-'],
+      answerArgs: (cwd) => ['exec', '--sandbox', 'read-only', '--skip-git-repo-check', '-C', cwd, '-'],
       env: {}
     }
   }
@@ -91,6 +94,22 @@ export class RunManager {
     return run
   }
 
+  changesPath(runId) { return join(this.runDir(runId), 'changes.json') }
+
+  /** Keeps what a run changed (parsed diff) next to its record: the working tree forgets it once the change is committed. */
+  saveChanges(runId, files) {
+    writeJsonAtomic(this.changesPath(runId), files)
+  }
+
+  readChanges(runId) {
+    try {
+      const path = this.changesPath(runId)
+      return existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : null
+    } catch {
+      return null
+    }
+  }
+
   list() {
     const runs = []
     for (const entry of readdirSync(this.runsDir)) {
@@ -121,17 +140,22 @@ export class RunManager {
     return report
   }
 
-  async start({ session, threadIds, agent, prompt }) {
+  async start({ session, threadIds, agent, prompt, mode = 'fix', nonce = null, meta = {} }) {
     const spec = this.agentCommands[agent]
     if (!spec?.command || !existsSync(spec.command)) throw new ApiError(400, 'agent_unavailable', `${agent} CLI is not installed or not found on PATH`)
+    // An answer run must never fall back to the edit command line: without a read-only one it is refused.
+    if (mode === 'answer' && !spec.answerArgs) throw new ApiError(400, 'answer_unsupported', `${agent} has no read-only answer command configured`)
     const existing = this.runningFor(session.repoPath)
     if (existing) throw new ApiError(409, 'run_in_progress', `a run is already in progress for this worktree`, { runId: existing.id })
 
     const run = {
+      ...meta,
       schemaVersion: 1,
       id: makeId('run'),
       sessionId: session.id,
       agent,
+      mode,
+      nonce,
       threadIds,
       cwd: session.repoPath,
       pid: null,
@@ -148,7 +172,8 @@ export class RunManager {
     run.fingerprintsBefore = fingerprintPaths(session.repoPath, dirtyBefore)
     this.save(run)
 
-    const args = typeof spec.args === 'function' ? spec.args(session.repoPath) : spec.args
+    const argSource = mode === 'answer' ? spec.answerArgs : spec.args
+    const args = typeof argSource === 'function' ? argSource(session.repoPath) : argSource
     const logPath = join(this.runDir(run.id), 'output.log')
     const logStream = createWriteStream(logPath, { flags: 'a', mode: 0o600 })
     let written = 0

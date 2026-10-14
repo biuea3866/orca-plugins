@@ -632,8 +632,9 @@ def build_snapshot(
     for worktree in active:
         for agent in worktree.get("agents") or []:
             terminal = terminals_by_pane.get(agent.get("paneKey"))
-            if terminal:
-                joined_handles.add(terminal["handle"])
+            if terminal is None:
+                continue
+            joined_handles.add(terminal["handle"])
             sessions_by_worktree[worktree.get("worktreeId")].append(
                 _agent_session(agent, worktree, terminal, tails, tail_errors, now_ms, pipelines, step_titles)
             )

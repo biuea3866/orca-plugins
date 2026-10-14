@@ -3,7 +3,8 @@ import runpy
 import tempfile
 from pathlib import Path
 import unittest
-from bridge import PublishPolicy, publish, render
+from unittest.mock import Mock, patch
+from bridge import HostSupportProbe, PublishPolicy, publish, render
 
 MODULE = runpy.run_path(str(Path(__file__).resolve().with_name('collector.py')))
 TEMPLATE = MODULE['PAGE_HTML']
@@ -53,6 +54,42 @@ class BridgeTests(unittest.TestCase):
         self.assertTrue(policy.due({'error': 'Orca offline'}, {}, 3))
         self.assertFalse(policy.due({'error': 'Orca offline'}, {}, 6))
 
+    def test_unpatched_host_throttles_changing_data_without_losing_latest_update(self):
+        policy = PublishPolicy()
+        self.assertTrue(policy.due({'sessions': [{'status': 'running'}]}, {}, 0, minimum_interval=30))
+        for now in (3, 6, 15, 29):
+            self.assertFalse(policy.due({'sessions': [{'status': 'idle', 'summary': str(now)}]}, {}, now, minimum_interval=30))
+        self.assertTrue(policy.due({'sessions': [{'status': 'idle', 'summary': 'latest'}]}, {}, 30, minimum_interval=30))
+
+    def test_host_support_tracks_app_switches_and_caches_between_checks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            patched = Path(directory) / 'Orca Dashboard.app/Contents'
+            (patched / 'Resources').mkdir(parents=True)
+            (patched / 'Resources/native-plugin-panel-data-support.json').write_text('{"version":1}')
+            official = Path(directory) / 'Orca.app/Contents/MacOS/Orca'
+            status = Mock(return_value={'app': {'pid': 123}})
+            probe = HostSupportProbe(status)
+            with patch('bridge.subprocess.check_output', side_effect=[str(patched / 'MacOS/Orca'), str(official), str(patched / 'MacOS/Orca')]):
+                self.assertTrue(probe.check(0))
+                self.assertTrue(probe.check(14))
+                self.assertEqual(status.call_count, 1)
+                self.assertFalse(probe.check(15))
+                self.assertTrue(probe.check(30))
+
+    def test_host_probe_failure_does_not_keep_previous_supported_state(self):
+        status = Mock(side_effect=RuntimeError('Orca unavailable'))
+        probe = HostSupportProbe(status)
+        probe.supported = True
+        self.assertFalse(probe.check(0))
+
+    def test_data_updates_and_host_mode_change_do_not_change_document_identity(self):
+        first = {'sessions': [], 'panelUpdateMode': 'document', 'panelUpdateNote': '기본 앱'}
+        second = {'sessions': [], 'panelUpdateMode': 'persistent-frame'}
+        pages = [render(snapshot, template=TEMPLATE) for snapshot in (first, second)]
+        import re
+        identity = lambda page: re.sub(r'(<script type="application/json" id="orca-panel-data">).*?(</script>)', r'\1\2', page)
+        self.assertEqual(identity(pages[0]), identity(pages[1]))
+
     def test_atomic_publish(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'panel.html'
@@ -60,6 +97,16 @@ class BridgeTests(unittest.TestCase):
             publish(path, 'new')
             self.assertEqual(path.read_text(), 'new')
             self.assertFalse(path.with_suffix('.tmp').exists())
+
+    def test_model_history_is_embedded_and_ui_loads_before_first_render(self):
+        usage = {'source': 'router', 'current': None, 'items': [{'question': '</script><script>alert(1)</script>',
+                 'usage': [{'model': 'gpt-6-luna', 'effort': 'low'}]}]}
+        page = render({'sessions': [{'id': 'router-test', 'llmUsage': usage}]}, template=TEMPLATE)
+        self.assertIn('function llmPanel(', page)
+        self.assertIn('gpt-6-luna', page)
+        self.assertNotIn('</script><script>alert(1)', page)
+        self.assertLess(page.index('const cardWithoutLlm = card;'), page.index('renderList(); onRoute(); tick();'))
+        self.assertIn('현재 실행 중인 모델 호출이 없습니다.', page)
 
 if __name__ == '__main__':
     unittest.main()

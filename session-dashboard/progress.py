@@ -12,11 +12,20 @@ def request_text(record):
     if record.get('type') != 'user':
         return ''
     content = (record.get('message') or {}).get('content') or []
-    if not isinstance(content, list):
+    if isinstance(content, str):
+        request = content
+    elif isinstance(content, list):
+        request = '\n'.join(block.get('text', '') for block in content
+                            if isinstance(block, dict) and block.get('type') == 'text')
+    else:
         return ''
-    request = '\n'.join(block.get('text', '') for block in content
-                        if isinstance(block, dict) and block.get('type') == 'text').strip()
-    return '' if request.startswith(('<', 'Base directory for this skill:', 'This session is being continued')) else request
+    request = re.sub(r'<environment_context\b[^>]*>.*?</environment_context>', '', request, flags=re.S).strip()
+    if request.startswith(('<task-notification', '<system-reminder', '<command-name',
+                           '<local-command', '<turn_aborted', '[Request interrupted',
+                           'Base directory for this skill:', 'This session is being continued')):
+        return ''
+    # Pasted user material is part of a request; its transport tags are not UI text.
+    return re.sub(r'</?pasted_content\b[^>]*>', '', request).strip()
 
 
 def phase_from_records(records):
@@ -45,10 +54,10 @@ def plan_from_records(records):
     for record in records:
         message = record.get('message') or {}
         content = message.get('content') or []
-        if not isinstance(content, list):
-            continue
         if request_text(record):
             calls, tasks, todos = {}, {}, None
+        if not isinstance(content, list):
+            continue
         for block in content:
             if not isinstance(block, dict):
                 continue

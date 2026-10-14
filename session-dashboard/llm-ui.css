@@ -1,0 +1,17 @@
+.llm-glance { display:flex; flex-wrap:wrap; gap:6px 10px; margin:10px 0; padding:9px 10px; background:var(--bg); border:1px solid var(--border); border-radius:8px; font-size:12px; overflow-wrap:anywhere; }
+.llm-state { color:var(--muted); flex-shrink:0; }
+.llm-state.active { color:var(--accent, #2563eb); font-weight:600; }
+.llm-history { display:grid; gap:8px; margin-top:12px; }
+.llm-history[hidden] { display:none; }
+.llm-collapse-all { cursor:pointer; font:inherit; font-size:11px; padding:6px 10px; margin-top:10px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text); }
+.llm-collapse-all:hover { background:var(--bg); }
+.llm-collapse-all:focus-visible { outline:2px solid var(--focus); outline-offset:3px; }
+.llm-history-item { border:1px solid var(--border); border-radius:8px; padding:10px 12px; }
+.llm-history-item summary { cursor:pointer; display:flex; align-items:baseline; gap:10px; }
+.llm-summary-text { flex:1; min-width:0; display:grid; gap:5px; }
+.llm-question { white-space:pre-wrap; overflow-wrap:anywhere; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+.llm-history-item[open] .llm-question { -webkit-line-clamp:unset; }
+.llm-choice { font-size:11px; color:var(--muted); overflow-wrap:anywhere; }
+.llm-history-state { flex-shrink:0; font-size:11px; color:var(--muted); }
+.llm-model { margin:10px 0 6px; font-size:12px; font-weight:600; overflow-wrap:anywhere; }
+.llm-answer { font-size:12px; white-space:pre-wrap; overflow-wrap:anywhere; max-height:240px; overflow:auto; }

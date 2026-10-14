@@ -25,7 +25,7 @@ class InstallTests(unittest.TestCase):
                 runpy.run_path(str(SOURCE / 'install.py'), run_name='__main__')
 
             runtime = home / '.orca/session-dashboard'
-            for filename in ['collector.py', 'bridge.py', 'progress.py', 'navigation.js']:
+            for filename in ['collector.py', 'bridge.py', 'progress.py', 'navigation.js', 'inquiries.py', 'topics.py', 'work_log.py', 'topic-ui.js', 'dashboard-ui.js', 'dashboard-ui.css']:
                 self.assertEqual((runtime / filename).read_bytes(), (SOURCE / filename).read_bytes())
             self.assertFalse((home / '.claude/bin/orca-dashboard').exists())
             self.assertIn('첫 데이터 수집 중', (runtime / 'plugin/panel.html').read_text())

@@ -10,8 +10,8 @@ export const BRIDGE_OPS = [
   'session.open', 'session.patch', 'session.delete', 'session.complete',
   'thread.add', 'thread.patch', 'thread.delete',
   'comment.add', 'comment.patch', 'comment.delete',
-  'run.start', 'run.cancel',
-  'overview.refresh', 'view', 'wide', 'ping'
+  'run.start', 'run.cancel', 'run.publish', 'run.view',
+  'overview.refresh', 'view', 'wide', 'ping', 'worktree.pin', 'file.full'
 ]
 
 export function encodeBridgeLine(op) {
@@ -88,11 +88,19 @@ export function validateOp(op) {
     case 'comment.delete':
       return requireSession(op) && requireRevision(op) && requireString(op.threadId, 64) && requireString(op.commentId, 64) ? { ok: true } : fail('sessionId, revision, threadId, commentId required')
     case 'run.start':
+      if (op.mode !== undefined && op.mode !== 'fix' && op.mode !== 'answer') return fail('mode must be fix or answer')
       return requireSession(op) && requireRevision(op) && AGENTS.has(op.agent) ? { ok: true } : fail('sessionId, revision and agent (claude|codex) required')
     case 'run.cancel':
+    case 'run.publish':
       return requireString(op.runId, 64) ? { ok: true } : fail('runId required')
+    case 'run.view':
+      return requireSession(op) && (op.runId === null || requireString(op.runId, 64)) ? { ok: true } : fail('sessionId and runId (a run id, or null to close) required')
     case 'view':
       return requireSession(op) ? { ok: true } : fail('sessionId required')
+    case 'file.full':
+      return requireSession(op) && requireString(op.path, 4096) && typeof op.full === 'boolean' ? { ok: true } : fail('sessionId, path and full (boolean) required')
+    case 'worktree.pin':
+      return op.worktreePath === null || requireString(op.worktreePath, 4096) ? { ok: true } : fail('worktreePath must be a path or null')
     case 'overview.refresh':
     case 'ping':
       return { ok: true }
