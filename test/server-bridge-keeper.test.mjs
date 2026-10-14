@@ -41,6 +41,37 @@ test('ensure is rate limited per worktree so a failing create does not spam term
   assert.equal(calls.filter((args) => args[1] === 'create').length, 2)
 })
 
+test('ensure does not create terminals while Orca cannot list terminals (app down or runtime unavailable)', async () => {
+  const calls = []
+  const exec = async (command, args) => {
+    calls.push(args)
+    if (args[1] === 'list') return { code: 1, stdout: JSON.stringify({ ok: false, error: { code: 'runtime_unavailable' } }), stderr: '' }
+    return { code: 0, stdout: JSON.stringify({ ok: true, result: { terminal: { handle: 'term_new' } } }), stderr: '' }
+  }
+  const keeper = new BridgeKeeper({ exec, orcaBinary: 'orca', launcherPath: '/home/bin/open-review', now: () => 0 })
+  const result = await keeper.ensure('/w', ['term_maybe_alive'])
+  assert.equal(result.created, false)
+  assert.equal(result.unavailable, true)
+  assert.equal(result.alive, null, 'unknown liveness must not wipe registered ids')
+  assert.ok(!calls.some((args) => args[1] === 'create'))
+})
+
+test('ensure treats an ok:false terminal list payload as unavailable', async () => {
+  const exec = async (command, args) => (args[1] === 'list'
+    ? { code: 0, stdout: JSON.stringify({ ok: false }), stderr: '' }
+    : { code: 0, stdout: '{}', stderr: '' })
+  const keeper = new BridgeKeeper({ exec, orcaBinary: 'orca', launcherPath: '/home/bin/open-review', now: () => 0 })
+  const result = await keeper.ensure('/w', [])
+  assert.equal(result.created, false)
+  assert.equal(result.unavailable, true)
+})
+
+test('listTerminals still returns an empty list when Orca is unavailable', async () => {
+  const exec = async () => ({ code: 1, stdout: '', stderr: 'down' })
+  const keeper = new BridgeKeeper({ exec, orcaBinary: 'orca', launcherPath: '/home/bin/open-review' })
+  assert.deepEqual(await keeper.listTerminals(), [])
+})
+
 test('aliveIds filters registered ids down to live terminal handles or pty ids', async () => {
   const { keeper } = makeKeeper({ terminals: [{ handle: 'term_a', ptyId: 'pty_a', worktreePath: '/w' }] })
   assert.deepEqual(await keeper.aliveIds(['term_a', 'pty_zzz', 'term_gone']), ['term_a'])

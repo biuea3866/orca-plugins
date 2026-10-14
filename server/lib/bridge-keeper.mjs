@@ -6,6 +6,11 @@ function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`
 }
 
+function filterAlive(terminals, registeredIds) {
+  const live = new Set(terminals.flatMap((terminal) => [terminal.handle, terminal.ptyId].filter(Boolean)))
+  return registeredIds.filter((id) => live.has(id))
+}
+
 export class BridgeKeeper {
   constructor({ exec, orcaBinary, launcherPath, now = () => Date.now(), cooldownMs = 60_000, log = () => {} }) {
     this.exec = exec
@@ -17,26 +22,32 @@ export class BridgeKeeper {
     this.lastAttempt = new Map()
   }
 
-  async listTerminals() {
+  /** Live terminals, or null when Orca cannot answer (app down, runtime unavailable). */
+  async readTerminals() {
     try {
       const result = await this.exec(this.orcaBinary, ['terminal', 'list', '--json'], { timeout: 15_000 })
-      if (result.code !== 0) return []
+      if (result.code !== 0) return null
       const parsed = JSON.parse(result.stdout)
-      return parsed.ok ? parsed.result?.terminals ?? [] : []
+      return parsed.ok ? parsed.result?.terminals ?? [] : null
     } catch {
-      return []
+      return null
     }
+  }
+
+  async listTerminals() {
+    return (await this.readTerminals()) ?? []
   }
 
   /** Registered ids that still belong to a live terminal (handle or pty id). */
   async aliveIds(registeredIds) {
-    const terminals = await this.listTerminals()
-    const live = new Set(terminals.flatMap((terminal) => [terminal.handle, terminal.ptyId].filter(Boolean)))
-    return registeredIds.filter((id) => live.has(id))
+    return filterAlive(await this.listTerminals(), registeredIds)
   }
 
   async ensure(worktreePath, registeredIds = []) {
-    const alive = await this.aliveIds(registeredIds)
+    const terminals = await this.readTerminals()
+    // liveness unknown: creating would stack a new bridge on every tick, and alive: null keeps registrations
+    if (terminals === null) return { created: false, alive: null, unavailable: true }
+    const alive = filterAlive(terminals, registeredIds)
     if (alive.length > 0) return { created: false, alive }
     const last = this.lastAttempt.get(worktreePath) ?? -Infinity
     if (this.now() - last < this.cooldownMs) return { created: false, alive, throttled: true }

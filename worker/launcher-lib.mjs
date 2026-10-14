@@ -3,7 +3,7 @@
 // outside world (fetch, spawn, exec, sleep, clock) is injectable for tests.
 
 import { spawn as nodeSpawn, execFile } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, rmSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -67,10 +67,38 @@ export function resolveOrcaBinary(env = process.env) {
   return 'orca'
 }
 
+function isProcessAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false
+  try { process.kill(pid, 0); return true } catch (error) { return error.code === 'EPERM' }
+}
+
+function tryAcquireSpawnLock(lockPath, at) {
+  try {
+    writeFileSync(lockPath, JSON.stringify({ pid: process.pid, at }), { flag: 'wx', mode: 0o600 })
+    return true
+  } catch (error) {
+    if (error.code === 'EEXIST') return false
+    throw error
+  }
+}
+
+/** A lock is stale when its holder died or it outlived a full spawn attempt. */
+function isSpawnLockStale(lockPath, now, staleMs) {
+  try {
+    const { pid, at } = JSON.parse(readFileSync(lockPath, 'utf8'))
+    return !isProcessAlive(pid) || now - at > staleMs
+  } catch {
+    // unreadable or half-written: judge by the file age
+    try { return Date.now() - statSync(lockPath).mtimeMs > staleMs } catch { return true }
+  }
+}
+
 /**
  * Make sure a healthy server is running. Reuses the recorded one when its
  * /health answers; otherwise spawns `serverEntry` detached and waits until the
  * server rewrites runtime/server.json and answers /health.
+ * Only the holder of runtime/server.spawn.lock spawns, so launchers started at
+ * the same moment (Orca restoring many bridge terminals) share one server.
  */
 export async function ensureServer({
   homeDir,
@@ -87,21 +115,39 @@ export async function ensureServer({
   if (await isHealthy(existing, fetchImpl)) return existing
 
   mkdirSync(join(homeDir, 'runtime'), { recursive: true, mode: 0o700 })
-  const child = spawnImpl(nodeBinary, [serverEntry], {
-    detached: true,
-    stdio: 'ignore',
-    cwd: homeDir,
-    env: { ...env, ELECTRON_RUN_AS_NODE: '1', ORCA_SELF_REVIEW_HOME: homeDir }
-  })
-  child.unref?.()
-
-  const startedAt = nowImpl()
+  const lockPath = join(homeDir, 'runtime', 'server.spawn.lock')
+  const staleLockMs = timeoutMs * 2
   const stalePid = existing?.pid ?? null
-  while (nowImpl() - startedAt < timeoutMs) {
-    const runtime = readRuntime(homeDir)
-    const isFresh = runtime && runtime.pid !== stalePid
-    if (isFresh && (await isHealthy(runtime, fetchImpl))) return runtime
-    await sleepImpl(150)
+  const startedAt = nowImpl()
+  let ownsLock = false
+  try {
+    while (nowImpl() - startedAt < timeoutMs) {
+      if (!ownsLock) {
+        ownsLock = tryAcquireSpawnLock(lockPath, nowImpl())
+        if (!ownsLock && isSpawnLockStale(lockPath, nowImpl(), staleLockMs)) {
+          rmSync(lockPath, { force: true })
+          continue
+        }
+        if (ownsLock) {
+          // another launcher may have finished spawning between our health check and the lock
+          const current = readRuntime(homeDir)
+          if (current && current.pid !== stalePid && (await isHealthy(current, fetchImpl))) return current
+          const child = spawnImpl(nodeBinary, [serverEntry], {
+            detached: true,
+            stdio: 'ignore',
+            cwd: homeDir,
+            env: { ...env, ELECTRON_RUN_AS_NODE: '1', ORCA_SELF_REVIEW_HOME: homeDir }
+          })
+          child.unref?.()
+        }
+      }
+      const runtime = readRuntime(homeDir)
+      const isFresh = runtime && runtime.pid !== stalePid
+      if (isFresh && (await isHealthy(runtime, fetchImpl))) return runtime
+      await sleepImpl(150)
+    }
+  } finally {
+    if (ownsLock) rmSync(lockPath, { force: true })
   }
   throw new Error(`Local Self Review server did not become healthy within ${timeoutMs}ms (home: ${homeDir})`)
 }
