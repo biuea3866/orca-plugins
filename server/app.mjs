@@ -14,7 +14,7 @@ import { discoverSiblingClones } from './lib/clones.mjs'
 import { applyFullFiles } from './lib/full-file.mjs'
 import { buildAnswerPrompt, selectAnswerableThreads, parseAnswers, newNonce } from './lib/answers.mjs'
 import { publishRun } from './lib/publish.mjs'
-import { snapshotThreads, historyForSession, runBelongsToSession, summarizeRun, capChanges, SNAPSHOT_MAX_BYTES, DETAIL_PANEL_MAX_BYTES } from './lib/run-history.mjs'
+import { snapshotThreads, historyForSession, runBelongsToSession, summarizeRun, capChanges, buildExchanges, SNAPSHOT_MAX_BYTES, DETAIL_PANEL_MAX_BYTES, SUMMARY_MAX_CHARS, EMBEDDED_DIFF_RUNS, EMBEDDED_DIFF_MAX_BYTES, EMBEDDED_FILE_MAX_BYTES } from './lib/run-history.mjs'
 import { RunManager, defaultAgentCommands, pickRunToShow, filterIgnoredChanges } from './lib/runs.mjs'
 import { annotateThreads } from './lib/anchor.mjs'
 import { buildPrompt, selectRunnableThreads } from './lib/prompt.mjs'
@@ -28,7 +28,7 @@ import { installLauncher } from '../worker/launcher-lib.mjs'
 
 export const PROTOCOL_VERSION = 1
 /** All sessions' AI-run history rows together in the panel data. */
-const HISTORY_PANEL_MAX_BYTES = 150 * 1024
+const HISTORY_PANEL_MAX_BYTES = 250 * 1024
 const CONTENT_TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.json': 'application/json; charset=utf-8' }
 const PLACEHOLDER_HTML = '<!doctype html><html><head><meta charset="utf-8"><title>Local Self Review</title></head><body><p>UI files are missing (ui/index.html).</p></body></html>'
 
@@ -94,7 +94,7 @@ export function createServer({
       else { try { store.setStatus(run.sessionId, 'rechecking') } catch { /* session gone */ } }
       publishPanel('run-finished')
       // The diff snapshot comes after the status flip and the first refresh: the card must not wait for git.
-      if (run.mode !== 'answer') { await saveRunChanges(run); publishPanel('run-history') }
+      if (run.mode !== 'answer') { await recordFixOutcome(run); publishPanel('run-history') }
     },
     ignoreChangedPaths: [join(panelRoot, 'panel.html')]
   })
@@ -267,18 +267,27 @@ export function createServer({
     }
   }
 
-  /** Snapshots what a fix run changed: the live diff vanishes once the change is committed, the history must not. */
-  async function saveRunChanges(run) {
+  /**
+   * What a fix run leaves for the history: the diff it made (the live diff vanishes once the change is committed) and
+   * what the AI reported back at the end of its output.
+   */
+  async function recordFixOutcome(run) {
     try {
       const latest = runs.get(run.id)
       const changed = latest.changedFiles || []
-      if (!changed.length || !latest.cwd || !existsSync(latest.cwd)) return
-      const files = capChanges(trimFilesForPanel(await git.workingTreeChangesFor(latest.cwd, changed)), { maxBytes: SNAPSHOT_MAX_BYTES })
-      runs.saveChanges(latest.id, files)
+      let savedDiff = false
+      if (changed.length && latest.cwd && existsSync(latest.cwd)) {
+        try {
+          const files = capChanges(trimFilesForPanel(await git.workingTreeChangesFor(latest.cwd, changed)), { maxBytes: SNAPSHOT_MAX_BYTES })
+          runs.saveChanges(latest.id, files)
+          savedDiff = true
+        } catch { /* the history then simply has no diff for this run */ }
+      }
       const fresh = runs.get(latest.id) // git took a while: do not overwrite anything saved meanwhile
-      fresh.hasChanges = true
+      if (savedDiff) fresh.hasChanges = true
+      fresh.summary = runs.readLog(fresh.id, 0).log.trim().slice(-SUMMARY_MAX_CHARS)
       runs.save(fresh)
-    } catch { /* the history then simply has no diff for this run */ }
+    } catch { /* the run record vanished */ }
   }
 
   /** An answer run is done: turn the agent's answer blocks into AI comments on the threads that were asked about. */
@@ -289,6 +298,7 @@ export function createServer({
       if (latest.status === 'succeeded') {
         const { answers } = parseAnswers({ text: runs.readLog(latest.id).log, threadIds: latest.threadIds, nonce: latest.nonce })
         const entries = Object.entries(answers).map(([threadId, answer]) => ({ threadId, body: answer, agent: latest.agent, runId: latest.id }))
+        latest.answers = entries.map(({ threadId, body }) => ({ threadId, body: body.slice(0, 4000) })) // kept with the run: the history groups them under the request
         try { added = store.appendAiComments(latest.sessionId, entries).added } catch { /* session gone */ }
       }
       latest.answered = added
@@ -426,19 +436,39 @@ export function createServer({
     const runHistory = {}
     const runDetail = {}
     let historyBytes = 0
+    let diffBytes = 0
+    const trimmedIds = new Set()
+    const rawRuns = new Map(runList.map((entry) => [entry.id, entry]))
     for (const summary of sessionList) {
       if (summary.kind !== 'local' || summary.status === 'completed') continue
-      const rows = historyForSession({ runs: runList, session: summary })
+      const fullSession = sessions[summary.id]?.session
+      // A row is one request: its question threads with the answers they got. The newest fix runs also carry their diff,
+      // so opening them is a local toggle in the panel (every bridge op round trip costs seconds and steals focus).
+      let embeddedDiffs = 0
+      const rows = historyForSession({ runs: runList, session: summary }).map((row) => {
+        const entry = { ...row, threads: buildExchanges({ run: rawRuns.get(row.id), session: fullSession }) }
+        if (row.mode === 'fix' && row.hasChanges && embeddedDiffs < EMBEDDED_DIFF_RUNS && diffBytes < EMBEDDED_DIFF_MAX_BYTES) {
+          entry.aiChanges = capChanges(runs.readChanges(row.id) ?? [], { maxBytes: EMBEDDED_FILE_MAX_BYTES })
+          embeddedDiffs += 1
+          diffBytes += JSON.stringify(entry.aiChanges).length
+        }
+        return entry
+      })
       if (rows.length === 0) continue
-      const size = JSON.stringify(rows).length
-      if (historyBytes + size <= HISTORY_PANEL_MAX_BYTES) { runHistory[summary.id] = rows; historyBytes += size }
+      // Over budget: light rows only; an opened run then brings its threads along with the diff and log.
+      let kept = rows
+      if (historyBytes + JSON.stringify(rows).length > HISTORY_PANEL_MAX_BYTES) {
+        kept = rows.map(({ threads, aiChanges, ...light }) => { trimmedIds.add(light.id); return { ...light, threads: null } })
+      }
+      runHistory[summary.id] = kept
+      historyBytes += JSON.stringify(kept).length
       const openId = historySelection[summary.id]
       const picked = openId ? runList.find((entry) => entry.id === openId && runBelongsToSession(entry, summary)) : null
       if (picked) {
         runDetail[summary.id] = {
           ...summarizeRun(picked),
           runId: picked.id,
-          threads: picked.threadSnapshots ?? [],
+          ...(trimmedIds.has(picked.id) ? { threads: buildExchanges({ run: picked, session: fullSession }) } : {}),
           aiChanges: capChanges(runs.readChanges(picked.id) ?? [], { maxBytes: DETAIL_PANEL_MAX_BYTES }),
           logTail: runs.readLog(picked.id, 0).log.slice(-PANEL_LOG_TAIL_BYTES),
           publishError: picked.publishError ?? null

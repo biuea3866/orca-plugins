@@ -111,14 +111,14 @@
 /*__INLINE:pin__*/
 
 // ------------------------------------------------------------------ data
-const TEMPLATE_VERSION = 'v26'
+const TEMPLATE_VERSION = 'v27'
 let DATA = JSON.parse(document.getElementById('orca-panel-data').textContent || '{}')
 const PREVIEW = window.parent === window                       // opened in a normal browser (server /panel-preview)
 const PREVIEW_TOKEN = document.querySelector('meta[name="sr-token"]')?.content ?? null
 let CONTEXT = null                                             // { displayName, branch, terminals: [{id}] }
 let ROUTE = 'review'                                            // 'review' | 'overview'
 let ACTIVE_WORKTREE = null                                      // worktree entry from DATA.worktrees
-const UI = { dismissedRun: null, lastRunStatus: {}, focusCandidate: null, runLogOpen: false, pendingThreads: [], pendingReplies: {}, sending: false, collapsedFiles: new Set(), filesCollapsed: true, file: null, selection: null, dragging: false, pendingForm: false, expanded: new Set(), draft: '', drafts: {}, scrollRestored: false, picker: null, lastMessage: '' }
+const UI = { dismissedRun: null, lastRunStatus: {}, focusCandidate: null, runLogOpen: false, pendingThreads: [], pendingReplies: {}, sending: false, collapsedFiles: new Set(), filesCollapsed: true, file: null, selection: null, dragging: false, pendingForm: false, expanded: new Set(), draft: '', drafts: {}, scrollRestored: false, picker: null, lastMessage: '', historyOpen: undefined, historyLoading: null }
 
 function escapeHtml(value) { return String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char])) }
 class Raw { constructor(html) { this.html = html } }
@@ -353,34 +353,53 @@ function historyRowHtml(row, openRunId) {
       <span class="muted small">${row.agent || ''} · ${when.toLocaleString()} · ${took} · 스레드 ${row.threadCount}개 · ${outcome}</span>${raw(branch)}</span>
     <span class="muted small">${open ? '접기' : '자세히'}</span></div>`
 }
-function historyThreadsHtml(threads) {
-  if (!threads.length) return '<div class="card-body small muted">이 실행이 받은 스레드 기록이 없습니다 (기록 기능 이전의 실행).</div>'
-  const blocks = threads.map((thread) => {
+// One request = one run. Each question thread is shown together with the answer this run gave it.
+function historyThreadsHtml(row) {
+  const threads = row.threads
+  if (threads === null || threads === undefined) return '<div class="card-body small muted">질문 목록이 커서 목록에 싣지 못했습니다. 아래 "불러오기"를 누르세요.</div>'
+  if (!threads.length) return '<div class="card-body small muted">이 실행이 받은 스레드가 남아 있지 않습니다.</div>'
+  const blocks = threads.map((thread, index) => {
     const range = thread.startLine === thread.endLine ? thread.startLine : thread.startLine + '–' + thread.endLine
-    const comments = (thread.comments || []).map((comment) => h`<div class="comment ${comment.author === 'ai' ? 'ai' : ''}"><div class="meta"><span>${comment.author === 'ai' ? 'AI' : '나'}</span></div><div class="body">${comment.body}</div></div>`).join('')
-    return h`<div class="history-thread"><div class="mono small">${thread.path}:${range}</div>${raw(comments)}</div>`
+    const question = (thread.comments || []).map((comment) => h`<div class="comment ${comment.author === 'ai' ? 'ai' : ''}"><div class="meta"><span>${comment.author === 'ai' ? 'AI' : '나'}</span></div><div class="body">${comment.body}</div></div>`).join('')
+    let reply = ''
+    if (thread.answer) reply = h`<div class="comment ai"><div class="meta"><span>AI 답변</span></div><div class="body">${thread.answer}</div></div>`
+    else if (row.mode === 'answer' && row.status === 'succeeded') reply = '<div class="comment"><div class="muted small">이 질문에는 답변이 달리지 않았습니다.</div></div>'
+    return h`<div class="history-thread"><div class="mono small">${index + 1}. ${thread.path}:${range}</div>${raw(question)}${raw(reply)}</div>`
   })
   return '<div class="card-body">' + blocks.join('') + '</div>'
 }
-
-function historyDetailHtml(detail) {
-  const started = new Date(detail.startedAt)
-  const answer = detail.mode === 'answer'
-  const result = answer ? '답변 ' + detail.answeredCount + '/' + detail.threadCount + '개를 스레드에 달았습니다.' : '변경 파일 ' + detail.changedCount + '개'
+function historyDetailHtml(row, extra, loading) {
+  const started = new Date(row.startedAt)
+  const answer = row.mode === 'answer'
+  const result = answer ? '답변 ' + row.answeredCount + '/' + row.threadCount + '개를 스레드에 달았습니다.' : '변경 파일 ' + row.changedCount + '개'
   let pushed = ''
-  if (detail.published) pushed = h`<div style="margin-top:4px"><span class="badge">푸시됨</span> <span class="mono">${String(detail.published.commit).slice(0, 8)}</span> → <span class="mono">${detail.published.branch}</span></div>`
-  else if (detail.publishError) pushed = h`<div class="notice error" style="margin-top:4px">푸시 실패: ${detail.publishError.message}</div>`
-  const exit = detail.exitCode !== null && detail.exitCode !== undefined ? ' · exit ' + detail.exitCode : ''
-  const branch = detail.branch ? ' · ' + detail.branch : ''
+  if (row.published) pushed = h`<div style="margin-top:4px"><span class="badge">푸시됨</span> <span class="mono">${String(row.published.commit).slice(0, 8)}</span> → <span class="mono">${row.published.branch}</span></div>`
+  else if (extra && extra.publishError) pushed = h`<div class="notice error" style="margin-top:4px">푸시 실패: ${extra.publishError.message}</div>`
+  const exit = row.exitCode !== null && row.exitCode !== undefined ? ' · exit ' + row.exitCode : ''
+  const branch = row.branch ? ' · ' + row.branch : ''
+  const shown = { ...row, threads: row.threads ?? (extra ? extra.threads : null) }
+  const count = shown.threads ? shown.threads.length : row.threadCount
+  const diff = Array.isArray(row.aiChanges) ? row.aiChanges : extra ? extra.aiChanges : null
+  let diffHtml = ''
+  if (!answer) {
+    if (diff) diffHtml = aiChangesHtml({ aiChanges: diff }, { history: true })
+    else if (row.hasChanges) diffHtml = '<div class="card-body small muted">' + (loading ? '변경 diff 를 불러오는 중…' : '변경 diff 는 아래 "불러오기"를 누르면 보여요.') + '</div>'
+    else diffHtml = '<div class="card-body small muted">저장된 변경 내용이 없습니다 (기록 기능 이전의 실행이거나 변경 파일이 없던 실행).</div>'
+  }
+  const summaryHtml = !answer && row.summary ? h`<div class="card-head" style="border-top:1px solid var(--border)">AI 가 남긴 말</div><div class="card-body"><div class="comment ai"><div class="body">${row.summary}</div></div></div>` : ''
+  let logHtml
+  if (extra) logHtml = h`<details><summary class="small" style="padding:4px 8px">에이전트 출력 로그</summary><pre>${extra.logTail || '(출력 없음)'}</pre></details>`
+  else if (loading) logHtml = '<div class="card-body small muted">불러오는 중…</div>'
+  else logHtml = '<div class="card-body"><button type="button" class="btn small" id="loadHistoryRun">' + (!answer && row.hasChanges && !diff ? '변경 diff·로그 불러오기' : '로그 불러오기') + '</button> <span class="muted small">서버에서 읽어 오므로 잠시 걸려요</span></div>'
   return h`<div class="run">
-    <div class="card-head">${answer ? 'AI 답변' : 'AI 수정'} <span class="badge ${detail.status === 'succeeded' ? '' : 'warn'}">${RUN_LABELS[detail.status] || detail.status}</span><span class="muted small">${detail.agent || ''} · ${started.toLocaleString()}${exit}${branch}</span><span style="flex:1"></span><button type="button" class="btn ghost small" id="closeHistoryRun">닫기</button></div>
+    <div class="card-head">${answer ? 'AI 답변' : 'AI 수정'} <span class="badge ${row.status === 'succeeded' ? '' : 'warn'}">${RUN_LABELS[row.status] || row.status}</span><span class="muted small">${row.agent || ''} · ${started.toLocaleString()}${exit}${branch}</span><span style="flex:1"></span><button type="button" class="btn ghost small" id="closeHistoryRun">닫기</button></div>
     <div class="card-body small"><div>${result}</div>${raw(pushed)}</div>
-    <div class="card-head" style="border-top:1px solid var(--border)">이 실행이 받은 스레드 <span class="muted small">${(detail.threads || []).length}개</span></div>
-    ${raw(historyThreadsHtml(detail.threads || []))}
-    ${raw(answer ? '' : aiChangesHtml(detail, { history: true }))}
-    <details><summary class="small" style="padding:4px 8px">에이전트 출력 로그</summary><pre>${detail.logTail || '(출력 없음)'}</pre></details></div>`
+    <div class="card-head" style="border-top:1px solid var(--border)">이 요청의 질문과 답변 <span class="muted small">스레드 ${count}개</span></div>
+    ${raw(historyThreadsHtml(shown))}
+    ${raw(summaryHtml)}
+    ${raw(diffHtml)}
+    ${raw(logHtml)}</div>`
 }
-
 function renderHistory(session) {
   if (!session) {
     app.innerHTML = h`<div class="card" style="margin-top:8px"><div class="card-body muted">리뷰 세션을 먼저 시작하면 AI 실행 기록이 여기에 쌓입니다.</div></div>`
@@ -388,21 +407,32 @@ function renderHistory(session) {
   }
   const s = session.session
   const rows = DATA.runHistory?.[s.id] || []
-  const detail = DATA.runDetail?.[s.id] || null
+  if (UI.historyOpen === undefined && rows.length) UI.historyOpen = rows[0].id // the newest request is open from the start
+  const openRow = rows.find((row) => row.id === UI.historyOpen) || null
+  const loaded = DATA.runDetail?.[s.id]
+  const extra = openRow && loaded && loaded.runId === openRow.id ? loaded : null
+  if (extra && UI.historyLoading === openRow.id) UI.historyLoading = null
+  const loading = Boolean(openRow) && UI.historyLoading === openRow.id
   const empty = '<div class="muted small">아직 AI 실행 기록이 없습니다. 리뷰 화면에서 "리뷰 완료 및 AI 수정"이나 "AI 답변 요청"을 실행하면 여기에 남습니다.</div>'
+  const list = rows.map((row) => historyRowHtml(row, UI.historyOpen) + (openRow && row.id === openRow.id ? historyDetailHtml(row, extra, loading) : '')).join('')
   app.innerHTML = h`
     <div class="card" style="margin-top:8px">
-      <div class="card-body"><div class="row">${raw(worktreeSwitcherHtml())}<span class="muted small">이 worktree 의 AI 실행 ${rows.length}건 · 최신순</span></div></div>
-      <div class="card-body" style="padding:4px">${raw(rows.length ? rows.map((row) => historyRowHtml(row, detail && detail.runId)).join('') : empty)}</div>
-    </div>
-    ${raw(detail ? historyDetailHtml(detail) : '')}`
+      <div class="card-body"><div class="row">${raw(worktreeSwitcherHtml())}<span class="muted small">이 worktree 의 AI 요청 ${rows.length}건 · 최신순 · 눌러서 펼치기</span></div></div>
+      <div class="card-body" style="padding:4px">${raw(rows.length ? list : empty)}</div>
+    </div>`
+  // Opening and closing a request is purely local: no bridge op, so it is instant.
   for (const item of app.querySelectorAll('[data-history-run]')) {
-    item.addEventListener('click', () => {
-      const same = detail && detail.runId === item.dataset.historyRun
-      act(() => send({ op: 'run.view', sessionId: s.id, runId: same ? null : item.dataset.historyRun }))
-    })
+    item.addEventListener('click', () => { UI.historyOpen = UI.historyOpen === item.dataset.historyRun ? null : item.dataset.historyRun; render({ keepScroll: true }) })
   }
-  app.querySelector('#closeHistoryRun')?.addEventListener('click', () => act(() => send({ op: 'run.view', sessionId: s.id, runId: null })))
+  app.querySelector('#closeHistoryRun')?.addEventListener('click', () => { UI.historyOpen = null; render({ keepScroll: true }) })
+  // Only the heavy parts of an old run (diff, log) come from the server, and only when asked for.
+  app.querySelector('#loadHistoryRun')?.addEventListener('click', () => {
+    const runId = openRow.id
+    UI.historyLoading = runId
+    render({ keepScroll: true })
+    setTimeout(() => { if (UI.historyLoading === runId) { UI.historyLoading = null; render({ keepScroll: true }) } }, 15000)
+    act(() => send({ op: 'run.view', sessionId: s.id, runId }))
+  })
   bindWorktreeSwitcher()
 }
 

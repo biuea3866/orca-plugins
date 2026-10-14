@@ -106,7 +106,21 @@ test('every AI run is kept in the session history, newest first, with what it wa
   assert.equal(history[1].mode, 'answer')
   assert.equal(history[1].answeredCount, 1)
   assert.equal(history[1].hasChanges, false)
-  for (const row of history) for (const key of ['logTail', 'aiChanges', 'nonce', 'fingerprintsBefore', 'threadSnapshots']) assert.ok(!(key in row), `${key} stays out of the list`)
+  for (const row of history) for (const key of ['logTail', 'nonce', 'fingerprintsBefore', 'threadSnapshots']) assert.ok(!(key in row), `${key} stays out of the list`)
+
+  // one request = its questions and the answers they got, all in the list row, so opening it needs no round trip
+  const asked = history[1].threads[0]
+  assert.equal(asked.path, 'a.js')
+  assert.ok(asked.comments.some((comment) => comment.body.includes('이름을 바꿔 주세요')), 'the question the answer belongs to')
+  assert.ok(asked.answer.includes('에 대한 설명입니다'), 'the answer sits on the question it answers')
+  const requested = history[0].threads[0]
+  assert.ok(requested.comments.some((comment) => comment.body.includes('네, 고쳐 주세요')), 'the request that started the fix')
+  assert.ok(history[0].summary.includes('fake agent received'), 'what the AI reported back after the fix')
+  const embedded = history[0].aiChanges.find((entry) => entry.path === 'a.js')
+  assert.ok(embedded.hunks.flatMap((hunk) => hunk.lines).some((line) => line.text.includes('edited by fake agent')), 'the newest diff is already in the list')
+  assert.ok(!('aiChanges' in history[1]), 'an answer run has no diff')
+  const stored = (await api('GET', `/api/runs/${answerRunId}`)).body.run
+  assert.equal(stored.answers[0].threadId, asked.id, 'the answers are kept in the run record')
   assert.equal(data.runDetail?.[sessionId], undefined, 'no run is open until one is picked')
   assert.ok(existsSync(join(homeDir, 'runs', fixRunId, 'changes.json')), 'the AI diff is saved with the run')
   assert.ok(!existsSync(join(homeDir, 'runs', answerRunId, 'changes.json')), 'an answer run changes nothing, so nothing is saved')
@@ -122,8 +136,7 @@ test('opening a past run shows its diff and its threads even after the change wa
   const detail = data.runDetail[sessionId]
   assert.equal(detail.runId, fixRunId)
   assert.equal(detail.mode, 'fix')
-  assert.equal(detail.threads[0].path, 'a.js')
-  assert.ok(detail.threads[0].comments.some((comment) => comment.body.includes('이름을 바꿔 주세요')), 'the question that started the run')
+  assert.ok(!('threads' in detail), 'the questions travel with the list rows; the opened run only adds the heavy parts')
   const file = detail.aiChanges.find((entry) => entry.path === 'a.js')
   assert.ok(file, 'the saved diff is still there')
   assert.ok(file.hunks.flatMap((hunk) => hunk.lines).some((line) => line.type === 'add' && line.text.includes('edited by fake agent')))

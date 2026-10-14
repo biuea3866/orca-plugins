@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, existsSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { snapshotThreads, summarizeRun, historyForSession, capChanges, HISTORY_LIMIT } from '../server/lib/run-history.mjs'
+import { snapshotThreads, summarizeRun, historyForSession, capChanges, buildExchanges, HISTORY_LIMIT } from '../server/lib/run-history.mjs'
 import { validateOp } from '../server/lib/bridge-ops.mjs'
 import { RunManager } from '../server/lib/runs.mjs'
 
@@ -25,13 +25,14 @@ test('snapshotThreads keeps what the reviewer asked, bounded in size', () => {
 })
 
 test('summarizeRun is a light row without logs, diffs or secrets', () => {
-  const row = summarizeRun(run('run_000000000001', { branch: 'feat/x', hasChanges: true, published: { commit: 'abcdef0123456789', branch: 'feat/x', remote: 'origin', at: 'x' }, logTail: 'big', aiChanges: [{}], threadSnapshots: [{}] }))
+  const row = summarizeRun(run('run_000000000001', { summary: '정리했어요', branch: 'feat/x', hasChanges: true, published: { commit: 'abcdef0123456789', branch: 'feat/x', remote: 'origin', at: 'x' }, logTail: 'big', aiChanges: [{}], threadSnapshots: [{}] }))
   assert.equal(row.id, 'run_000000000001')
   assert.equal(row.mode, 'fix')
   assert.equal(row.threadCount, 1)
   assert.deepEqual(row.changedFiles, ['a.js'])
   assert.equal(row.changedCount, 1)
   assert.equal(row.hasChanges, true)
+  assert.equal(row.summary, '정리했어요', 'what the AI reported back')
   assert.equal(row.branch, 'feat/x')
   assert.deepEqual(row.published, { commit: 'abcdef0123456789', branch: 'feat/x' })
   for (const key of ['nonce', 'fingerprintsBefore', 'pid', 'cwd', 'logTail', 'aiChanges', 'threadSnapshots']) assert.ok(!(key in row), `${key} must not be in the row`)
@@ -74,6 +75,38 @@ test('capChanges drops the biggest diffs first when over budget and never mutate
   assert.equal(huge.panelTruncated, true)
   assert.equal(input[1].hunks.length, 1, 'input is not mutated')
   assert.equal(capChanges(input, { maxBytes: 10 * 1024 * 1024 })[1].hunks.length, 1, 'within budget nothing is dropped')
+})
+
+test('buildExchanges pairs every question thread of a request with the answer this run gave it', () => {
+  const exchanges = buildExchanges({
+    run: run('run_000000000010', {
+      mode: 'answer',
+      threadIds: ['thr_1', 'thr_2'],
+      threadSnapshots: [
+        { id: 'thr_1', path: 'a.js', side: 'new', startLine: 2, endLine: 2, comments: [{ author: 'user', body: '이게 왜 필요해요?' }] },
+        { id: 'thr_2', path: 'b.js', side: 'new', startLine: 5, endLine: 6, comments: [{ author: 'user', body: '두 번째 질문' }] }
+      ],
+      answers: [{ threadId: 'thr_1', body: '필요한 이유는 이렇습니다' }]
+    }),
+    session: { threads: [] }
+  })
+  assert.deepEqual(exchanges.map((entry) => entry.id), ['thr_1', 'thr_2'])
+  assert.equal(exchanges[0].comments[0].body, '이게 왜 필요해요?')
+  assert.equal(exchanges[0].answer, '필요한 이유는 이렇습니다', 'the answer sits on the question it answers')
+  assert.equal(exchanges[1].answer, null, 'a thread the AI did not answer has no answer')
+})
+
+test('buildExchanges rebuilds a run without a saved snapshot from the session threads, keeping its AI reply as the answer', () => {
+  const session = { threads: [{ id: 'thr_1', path: 'a.js', side: 'new', startLine: 2, endLine: 2, comments: [{ author: 'user', body: '질문' }, { author: 'ai', runId: 'run_000000000011', body: 'AI 답' }, { author: 'ai', runId: 'run_other', body: '다른 실행의 답' }] }] }
+  const exchanges = buildExchanges({ run: run('run_000000000011', { mode: 'answer', threadIds: ['thr_1', 'thr_gone'] }), session })
+  assert.equal(exchanges.length, 1, 'a thread that no longer exists is skipped')
+  assert.equal(exchanges[0].answer, 'AI 답')
+  assert.deepEqual(exchanges[0].comments.map((comment) => comment.body), ['질문', '다른 실행의 답'], 'this run\'s reply is the answer, not part of the question')
+})
+
+test('buildExchanges cuts a very long answer', () => {
+  const exchanges = buildExchanges({ run: run('run_000000000012', { threadSnapshots: [{ id: 'thr_1', path: 'a.js', side: 'new', startLine: 1, endLine: 1, comments: [] }], answers: [{ threadId: 'thr_1', body: 'y'.repeat(20_000) }] }), session: { threads: [] } })
+  assert.ok(exchanges[0].answer.length <= 4001)
 })
 
 test('run.view selects a run to inspect, or null to close it', () => {
