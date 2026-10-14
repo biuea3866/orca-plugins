@@ -16,7 +16,9 @@ if (process.env.FAKE_AGENT_ANSWER) {
     process.stdout.write(`@@ANSWER:${id}:${nonce}@@\n답변: ${id} 에 대한 설명입니다.\n둘째 줄\n@@END:${nonce}@@\n`)
   }
 }
-for (const target of String(process.env.FAKE_AGENT_EDIT ?? '').split(',').filter(Boolean)) writeFileSync(target, 'edited by fake agent\n')
+// A real agent asked to answer questions is read-only, so the fake one edits only for fix prompts.
+const answering = prompt.includes('질문 답변 요청')
+if (!answering) for (const target of String(process.env.FAKE_AGENT_EDIT ?? '').split(',').filter(Boolean)) writeFileSync(target, 'edited by fake agent\n')
 const sleepMs = Number(process.env.FAKE_AGENT_SLEEP_MS ?? 0)
 if (sleepMs > 0) {
   setTimeout(() => { process.stdout.write('done after sleep\n'); process.exit(Number(process.env.FAKE_AGENT_EXIT ?? 0)) }, sleepMs)

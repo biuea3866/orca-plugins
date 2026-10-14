@@ -10,7 +10,7 @@ export const BRIDGE_OPS = [
   'session.open', 'session.patch', 'session.delete', 'session.complete',
   'thread.add', 'thread.patch', 'thread.delete',
   'comment.add', 'comment.patch', 'comment.delete',
-  'run.start', 'run.cancel',
+  'run.start', 'run.cancel', 'run.publish',
   'overview.refresh', 'view', 'wide', 'ping', 'worktree.pin', 'file.full'
 ]
 
@@ -91,6 +91,7 @@ export function validateOp(op) {
       if (op.mode !== undefined && op.mode !== 'fix' && op.mode !== 'answer') return fail('mode must be fix or answer')
       return requireSession(op) && requireRevision(op) && AGENTS.has(op.agent) ? { ok: true } : fail('sessionId, revision and agent (claude|codex) required')
     case 'run.cancel':
+    case 'run.publish':
       return requireString(op.runId, 64) ? { ok: true } : fail('runId required')
     case 'view':
       return requireSession(op) ? { ok: true } : fail('sessionId required')

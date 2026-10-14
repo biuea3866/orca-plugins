@@ -16,7 +16,7 @@
 ## Overview
 
 - 목표 = PR 생성 전 로컬 셀프 리뷰. GitHub PR 화면과 같은 diff 리뷰·드래그 멀티라인 코멘트·스레드 → "리뷰 완료 및 AI 수정" 버튼으로 Claude/Codex 헤드리스 실행 → 재검토.
-- GitHub 쓰기 = 0건. GitHub 접근은 `gh` 읽기 전용 조회(PR 목록·상세·diff, 내 브랜치 조회용 GraphQL query)뿐. `GitHubReader.graphql()` 은 query 만 허용하고 mutation·subscription 은 거부한다.
+- GitHub API 쓰기 = 0건(PR·코멘트 생성 없음). 레포 이력에 쓰는 동작은 하나뿐: 사용자가 AI 수정 실행 카드의 "커밋 & 푸시"(`run.publish` op)를 두 번 눌렀을 때 서버(AI 아님)가 `server/lib/publish.mjs` 로 실행의 변경 파일만 커밋하고 세션 브랜치에 push 한다. 강제 push 없음, 공유 브랜치·이름이 다른 upstream 거부, push 실패 시 로컬 커밋 보존 후 push 만 재시도. GitHub 접근은 `gh` 읽기 전용 조회(PR 목록·상세·diff, 내 브랜치 조회용 GraphQL query)뿐. `GitHubReader.graphql()` 은 query 만 허용하고 mutation·subscription 은 거부한다.
 - 구성 = Orca 플러그인 1개 = **우측 패널(컴패니언)** + **워커(커맨드)** + **로컬 서버(UI·API)**. 리뷰 본체는 같은 워크스페이스의 **Orca 내장 브라우저 탭**에 열린다.
 
 ## 플랫폼 제약 → 구조 결정 (사실 근거: Orca 앱 번들 `out/shared/plugins/*.js`)
@@ -245,7 +245,7 @@ activate(ctx):
 
 ## Out of Scope (1차)
 
-split diff, 파일별 확인 완료, 세션 내보내기, Orca 에이전트 터미널로 프롬프트 전송(헤드리스 실행이 기본), GitHub Enterprise, 자동 commit/push, PR 생성.
+split diff, 파일별 확인 완료, 세션 내보내기, Orca 에이전트 터미널로 프롬프트 전송(헤드리스 실행이 기본), GitHub Enterprise, 자동 commit/push(수동 버튼 "커밋 & 푸시"만 제공), PR 생성.
 
 
 ## 패널 네이티브 설계 (v2)

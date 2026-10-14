@@ -32,7 +32,7 @@ Orca → Settings → Plugins에서 플러그인 시스템을 켜고 Development
 
 PR을 올리기 **전에** 사람이 직접 하는 셀프 리뷰 도구. GitHub PR 화면처럼 diff를 읽고, 라인 번호를 **드래그해 멀티라인 코멘트**를 남기고, "리뷰 완료 및 AI 수정" 버튼으로 **Claude 또는 Codex** 가 코멘트대로 코드를 고치게 한 뒤 다시 검토한다. 등록된 모든 레포의 **draft/open PR 목록과 상세**도 한 화면에서 본다.
 
-- GitHub 쓰기 = **0건**. 코멘트·세션·AI 실행 기록은 전부 로컬(`~/Library/Application Support/OrcaLocalSelfReview/`)에만 저장. GitHub 접근은 `gh` 읽기 전용 조회(PR 목록·상세·diff, 내 브랜치 조회용 GraphQL query)뿐.
+- GitHub API 쓰기 = **0건**(PR·코멘트 생성 없음). 레포에 쓰는 동작은 사용자가 AI 수정 실행 카드의 **"커밋 & 푸시"** 를 두 번 눌렀을 때 서버가 하는 `git commit`·`git push` 하나뿐이다. 코멘트·세션·AI 실행 기록은 전부 로컬(`~/Library/Application Support/OrcaLocalSelfReview/`)에만 저장. GitHub 접근은 `gh` 읽기 전용 조회(PR 목록·상세·diff, 내 브랜치 조회용 GraphQL query)뿐.
 - 런타임 의존성 = 0 (Node 내장 모듈만). 빌드 단계 없음.
 
 ## 구성
@@ -69,7 +69,7 @@ PR을 올리기 **전에** 사람이 직접 하는 셀프 리뷰 도구. GitHub 
 2. 파일을 고르고, 라인 번호 거터를 드래그(또는 Shift+클릭, 키보드 Enter/Shift+↑↓) → 코멘트 작성. 같은 파일·같은 side 안에서 최대 200줄. 코멘트는 브리지 터미널을 거쳐 저장되고 패널이 곧 갱신된다.
 3. 에이전트(claude/codex) 선택 → **리뷰 완료 및 AI 수정** → 열린 코멘트가 프롬프트로 변환돼 헤드리스 실행. 상태·변경 파일·로그는 패널의 "AI 수정" 카드에, 전체 로그는 "넓게"에서.
 4. 완료 후 스레드별로 직접 resolve. (AI 성공만으로 자동 resolve 되지 않는다.)
-5. 만족하면 평소대로 PR 생성. 플러그인은 commit/push/PR 을 하지 않는다.
+5. 만족하면 평소대로 PR 생성. 기본적으로 플러그인은 commit/push/PR 을 하지 않는다. AI 수정 실행이 끝나면 실행 카드의 **"커밋 & 푸시"**(한 번 더 눌러 확정)로 이 실행이 바꾼 파일만 커밋하고 현재 브랜치에 push 할 수 있다. AI 가 아니라 서버가 수행하며, 강제 push 는 없고, main·dev·release/·hotfix/ 등 공유 브랜치(와 저장소 기본 브랜치)와 브랜치 이름이 다른 upstream 은 거부한다. 내 다른 변경(스테이징 포함)은 커밋하지 않는다. push 가 실패하면 로컬 커밋은 남고 같은 버튼으로 push 만 다시 시도한다. PR 생성은 하지 않는다.
 
 패널 "전체 PR·세션" 탭에서는 Orca 에 등록된 모든 레포의 open PR(Draft 배지·레포 필터)과 로컬 세션을 본다. **PR 없이 푸시한 내 브랜치**(최근 30일, 내 GitHub 계정이 커밋한 브랜치)도 "내 브랜치 · PR 없음" 카드에 나온다. 원격 브랜치를 조회하므로 Orca 에 등록되지 않은 클론에서 푸시한 브랜치도 보이고, 그 브랜치가 체크아웃된 worktree 가 있으면 "리뷰 시작" 버튼이 붙는다. Orca 에 등록되지 않은 별도 클론도 찾는다: 등록된 레포와 **같은 부모 디렉터리 바로 아래**에서 `origin` 이 같은 GitHub 레포인 체크아웃을 읽기 전용 git 으로 확인해(1분 캐시, 새로고침으로 갱신) worktree 선택 상자와 오버뷰 worktree 목록에 "Orca 미등록"으로 올린다. 이 클론은 리뷰·AI 실행은 되지만 Orca 터미널 브리지와는 연결되지 않는다. main·master·dev·release/·hotfix/ 는 제외한다. PR 상세·diff 와 PR 에 대한 로컬 코멘트는 "넓게"(내장 브라우저)에서 본다.
 

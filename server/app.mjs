@@ -13,6 +13,7 @@ import { branchCards } from './lib/branches.mjs'
 import { discoverSiblingClones } from './lib/clones.mjs'
 import { applyFullFiles } from './lib/full-file.mjs'
 import { buildAnswerPrompt, selectAnswerableThreads, parseAnswers, newNonce } from './lib/answers.mjs'
+import { publishRun } from './lib/publish.mjs'
 import { RunManager, defaultAgentCommands, pickRunToShow, filterIgnoredChanges } from './lib/runs.mjs'
 import { annotateThreads } from './lib/anchor.mjs'
 import { buildPrompt, selectRunnableThreads } from './lib/prompt.mjs'
@@ -228,6 +229,36 @@ export function createServer({
       if (worktree) return { path: worktree.path, branch: worktree.branch, worktreeId: worktree.id }
     }
     return null
+  }
+
+  /**
+   * "커밋 & 푸시": the server (never the AI) commits what a fix run changed and pushes it, on the user's explicit request.
+   * The outcome is kept on the run so the panel can show the pushed commit, or why it failed and what to do.
+   */
+  const publishing = new Set()
+  async function publishFixRun(runId) {
+    const run = runs.get(runId)
+    if (publishing.has(runId)) throw new ApiError(409, 'publish_in_progress', 'this run is already being committed and pushed')
+    publishing.add(runId)
+    try {
+      const session = store.getSession(run.sessionId)
+      const result = await publishRun({ exec, gitBinary: resolveBin('git') ?? 'git', run, session })
+      const latest = runs.get(runId)
+      latest.published = { commit: result.commit, branch: result.branch, remote: result.remote, at: now() }
+      delete latest.publishError
+      runs.save(latest)
+      return result
+    } catch (error) {
+      if (error instanceof ApiError && error.code !== 'not_publishable') {
+        const latest = runs.get(runId)
+        latest.publishError = { code: error.code, message: error.message, commit: error.extra?.commit ?? null, at: now() }
+        runs.save(latest)
+      }
+      throw error
+    } finally {
+      publishing.delete(runId)
+      publishPanel('publish')
+    }
   }
 
   /** An answer run is done: turn the agent's answer blocks into AI comments on the threads that were asked about. */
@@ -456,6 +487,7 @@ export function createServer({
       case 'comment.delete': { const result = store.deleteComment(op.sessionId, op.threadId, op.commentId, op); publishPanel('thread'); return result }
       case 'run.start': { const run = await startRun(op.sessionId, op); ensureRunPolling(); publishPanel('run'); return run }
       case 'run.cancel': { const run = runs.cancel(op.runId); publishPanel('run'); return run }
+      case 'run.publish': return publishFixRun(op.runId)
       case 'overview.refresh': { lastOverview = await overview({ force: true }); publishPanel('overview'); return { ok: true } }
       case 'wide': {
         const session = store.getSession(op.sessionId)

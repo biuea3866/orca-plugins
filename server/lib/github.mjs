@@ -30,7 +30,7 @@ const REFS_QUERY = `query($owner:String!,$name:String!,$after:String){
   }
 }`
 // Shared integration/base branches are never "my work in progress", even when my commit is their tip.
-const BASE_BRANCH = /^(?:main|master|dev|develop|development|stage|staging|production)$|^(?:release|hotfix)\//
+export const BASE_BRANCH =/^(?:main|master|dev|develop|development|stage|staging|production)$|^(?:release|hotfix)\//
 
 export function parseGitHubRemote(remoteUrl) {
   if (typeof remoteUrl !== 'string') return null
