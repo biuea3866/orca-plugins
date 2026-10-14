@@ -73,7 +73,7 @@ export class PanelPublisher {
     html = buildPanelDocument({ template: readFileSync(this.templatePath(), 'utf8'), data, modules: this.readModules() })
     if (Buffer.byteLength(JSON.stringify(data)) > PANEL_DATA_MAX_BYTES) {
       const slimRuns = Object.fromEntries(Object.entries(data.runs ?? {}).map(([id, run]) => [id, { ...run, logTail: '', aiChanges: Array.isArray(run.aiChanges) ? run.aiChanges.map((file) => ({ ...file, hunks: [], panelTruncated: true })) : run.aiChanges }]))
-      let slim = { ...data, runs: slimRuns }
+      let slim = { ...data, runs: slimRuns, runDetail: {} }
       if (Buffer.byteLength(JSON.stringify(slim)) > PANEL_DATA_MAX_BYTES) slim = { ...slim, sessions: fitSessionsToBudget(slim.sessions, slim.viewState, { budgetBytes: PANEL_DATA_MAX_BYTES / 2 }) }
       if (Buffer.byteLength(JSON.stringify(slim)) > PANEL_DATA_MAX_BYTES) slim = { ...slim, sessions: {}, oversized: true }
       html = buildPanelDocument({ template: readFileSync(this.templatePath(), 'utf8'), data: slim, modules: this.readModules() })

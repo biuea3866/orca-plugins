@@ -14,6 +14,7 @@ import { discoverSiblingClones } from './lib/clones.mjs'
 import { applyFullFiles } from './lib/full-file.mjs'
 import { buildAnswerPrompt, selectAnswerableThreads, parseAnswers, newNonce } from './lib/answers.mjs'
 import { publishRun } from './lib/publish.mjs'
+import { snapshotThreads, historyForSession, runBelongsToSession, summarizeRun, capChanges, SNAPSHOT_MAX_BYTES, DETAIL_PANEL_MAX_BYTES } from './lib/run-history.mjs'
 import { RunManager, defaultAgentCommands, pickRunToShow, filterIgnoredChanges } from './lib/runs.mjs'
 import { annotateThreads } from './lib/anchor.mjs'
 import { buildPrompt, selectRunnableThreads } from './lib/prompt.mjs'
@@ -26,6 +27,8 @@ import { BridgeKeeper } from './lib/bridge-keeper.mjs'
 import { installLauncher } from '../worker/launcher-lib.mjs'
 
 export const PROTOCOL_VERSION = 1
+/** All sessions' AI-run history rows together in the panel data. */
+const HISTORY_PANEL_MAX_BYTES = 150 * 1024
 const CONTENT_TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.json': 'application/json; charset=utf-8' }
 const PLACEHOLDER_HTML = '<!doctype html><html><head><meta charset="utf-8"><title>Local Self Review</title></head><body><p>UI files are missing (ui/index.html).</p></body></html>'
 
@@ -86,10 +89,12 @@ export function createServer({
     agentCommands: agentCommands ?? defaultAgentCommands((name) => resolveBin(name)),
     git,
     now,
-    onFinished: (run) => {
+    onFinished: async (run) => {
       if (run.mode === 'answer') applyAnswers(run)
       else { try { store.setStatus(run.sessionId, 'rechecking') } catch { /* session gone */ } }
       publishPanel('run-finished')
+      // The diff snapshot comes after the status flip and the first refresh: the card must not wait for git.
+      if (run.mode !== 'answer') { await saveRunChanges(run); publishPanel('run-history') }
     },
     ignoreChangedPaths: [join(panelRoot, 'panel.html')]
   })
@@ -98,6 +103,7 @@ export function createServer({
   const bridges = readBridges(bridgesPath)            // worktreePath → { terminalIds: string[], registeredAt }
   let pinnedWorktree = null                            // worktree picked by hand: the panel iframe forgets it when remounted
   const viewState = {}                                 // sessionId → { route, file, scroll }
+  const historySelection = {}                          // sessionId → id of the past AI run opened in the history screen
   let lastOverview = null
   let runPollTimer = null
   const launcherPath = join(homeDir, 'bin', 'open-review')
@@ -261,6 +267,20 @@ export function createServer({
     }
   }
 
+  /** Snapshots what a fix run changed: the live diff vanishes once the change is committed, the history must not. */
+  async function saveRunChanges(run) {
+    try {
+      const latest = runs.get(run.id)
+      const changed = latest.changedFiles || []
+      if (!changed.length || !latest.cwd || !existsSync(latest.cwd)) return
+      const files = capChanges(trimFilesForPanel(await git.workingTreeChangesFor(latest.cwd, changed)), { maxBytes: SNAPSHOT_MAX_BYTES })
+      runs.saveChanges(latest.id, files)
+      const fresh = runs.get(latest.id) // git took a while: do not overwrite anything saved meanwhile
+      fresh.hasChanges = true
+      runs.save(fresh)
+    } catch { /* the history then simply has no diff for this run */ }
+  }
+
   /** An answer run is done: turn the agent's answer blocks into AI comments on the threads that were asked about. */
   function applyAnswers(run) {
     try {
@@ -296,7 +316,7 @@ export function createServer({
     } catch (error) {
       throw new ApiError(400, 'prompt_too_large', error.message)
     }
-    const run = await runs.start({ session, threadIds: threads.map((thread) => thread.id), agent, prompt, mode, nonce })
+    const run = await runs.start({ session, threadIds: threads.map((thread) => thread.id), agent, prompt, mode, nonce, meta: { branch: session.branch ?? null, threadSnapshots: snapshotThreads(threads) } })
     session.agent = agent
     if (mode === 'fix') session.status = 'fixing'
     store.save(session)
@@ -402,6 +422,29 @@ export function createServer({
       }
       runsBySession[run.sessionId] = { ...run, fingerprintsBefore: undefined, nonce: undefined, logTail: log.slice(-PANEL_LOG_TAIL_BYTES), aiChanges }
     }
+    // History of every AI run per session (light rows), plus the one past run the reviewer opened (diff, threads, log).
+    const runHistory = {}
+    const runDetail = {}
+    let historyBytes = 0
+    for (const summary of sessionList) {
+      if (summary.kind !== 'local' || summary.status === 'completed') continue
+      const rows = historyForSession({ runs: runList, session: summary })
+      if (rows.length === 0) continue
+      const size = JSON.stringify(rows).length
+      if (historyBytes + size <= HISTORY_PANEL_MAX_BYTES) { runHistory[summary.id] = rows; historyBytes += size }
+      const openId = historySelection[summary.id]
+      const picked = openId ? runList.find((entry) => entry.id === openId && runBelongsToSession(entry, summary)) : null
+      if (picked) {
+        runDetail[summary.id] = {
+          ...summarizeRun(picked),
+          runId: picked.id,
+          threads: picked.threadSnapshots ?? [],
+          aiChanges: capChanges(runs.readChanges(picked.id) ?? [], { maxBytes: DETAIL_PANEL_MAX_BYTES }),
+          logTail: runs.readLog(picked.id, 0).log.slice(-PANEL_LOG_TAIL_BYTES),
+          publishError: picked.publishError ?? null
+        }
+      }
+    }
     if (reason !== 'run-progress' || !lastOverview) {
       try { lastOverview = await overview() } catch (error) { lastOverview = { repos: [], sessions: sessionList, github: { enabled: false, lastFetchedAt: null, errors: [{ repo: '(orca)', message: error.message }] } } }
     }
@@ -428,6 +471,8 @@ export function createServer({
       sessions: fitSessionsToBudget(sessions, viewState, { budgetBytes: Math.floor(PANEL_DATA_MAX_BYTES * 0.6) }),
       sessionList,
       runs: runsBySession,
+      runHistory,
+      runDetail,
       overview: { repos: lastOverview.repos, github: lastOverview.github },
       pinnedWorktree,
       viewState
@@ -467,7 +512,7 @@ export function createServer({
       }
       case 'session.patch': { const result = store.updateSession(op.sessionId, op); publishPanel('session'); return result }
       case 'session.complete': { const session = store.getSession(op.sessionId); const result = store.updateSession(op.sessionId, { revision: session.revision, status: 'completed' }); publishPanel('session'); return result }
-      case 'session.delete': { store.deleteSession(op.sessionId); delete viewState[op.sessionId]; publishPanel('session'); return { ok: true } }
+      case 'session.delete': { store.deleteSession(op.sessionId); delete viewState[op.sessionId]; delete historySelection[op.sessionId]; publishPanel('session'); return { ok: true } }
       case 'thread.add': {
         const result = store.addThread(op.sessionId, op)
         viewState[op.sessionId] = { ...(viewState[op.sessionId] ?? { route: 'review', scroll: 0 }), file: op.path, anchor: { path: op.path, side: op.side, endLine: op.endLine } }
@@ -487,6 +532,17 @@ export function createServer({
       case 'comment.delete': { const result = store.deleteComment(op.sessionId, op.threadId, op.commentId, op); publishPanel('thread'); return result }
       case 'run.start': { const run = await startRun(op.sessionId, op); ensureRunPolling(); publishPanel('run'); return run }
       case 'run.cancel': { const run = runs.cancel(op.runId); publishPanel('run'); return run }
+      case 'run.view': {
+        const session = store.getSession(op.sessionId)
+        if (op.runId === null) delete historySelection[op.sessionId]
+        else {
+          const run = runs.get(op.runId)
+          if (!runBelongsToSession(run, session)) throw new ApiError(404, 'run_not_found', `run ${op.runId} is not part of this session's history`)
+          historySelection[op.sessionId] = op.runId
+        }
+        publishPanel('run-view')
+        return { ok: true }
+      }
       case 'run.publish': return publishFixRun(op.runId)
       case 'overview.refresh': { lastOverview = await overview({ force: true }); publishPanel('overview'); return { ok: true } }
       case 'wide': {

@@ -94,6 +94,22 @@ export class RunManager {
     return run
   }
 
+  changesPath(runId) { return join(this.runDir(runId), 'changes.json') }
+
+  /** Keeps what a run changed (parsed diff) next to its record: the working tree forgets it once the change is committed. */
+  saveChanges(runId, files) {
+    writeJsonAtomic(this.changesPath(runId), files)
+  }
+
+  readChanges(runId) {
+    try {
+      const path = this.changesPath(runId)
+      return existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : null
+    } catch {
+      return null
+    }
+  }
+
   list() {
     const runs = []
     for (const entry of readdirSync(this.runsDir)) {
@@ -124,7 +140,7 @@ export class RunManager {
     return report
   }
 
-  async start({ session, threadIds, agent, prompt, mode = 'fix', nonce = null }) {
+  async start({ session, threadIds, agent, prompt, mode = 'fix', nonce = null, meta = {} }) {
     const spec = this.agentCommands[agent]
     if (!spec?.command || !existsSync(spec.command)) throw new ApiError(400, 'agent_unavailable', `${agent} CLI is not installed or not found on PATH`)
     // An answer run must never fall back to the edit command line: without a read-only one it is refused.
@@ -133,6 +149,7 @@ export class RunManager {
     if (existing) throw new ApiError(409, 'run_in_progress', `a run is already in progress for this worktree`, { runId: existing.id })
 
     const run = {
+      ...meta,
       schemaVersion: 1,
       id: makeId('run'),
       sessionId: session.id,

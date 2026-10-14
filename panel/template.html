@@ -77,6 +77,10 @@
   .file-head .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
   .run { margin: 8px; border: 1px solid var(--border); border-radius: var(--radius, 6px); background: var(--card); }
   .run.live { border-color: var(--primary); }
+  .history-row { cursor: pointer; flex-wrap: wrap; padding: 6px 4px; }
+  .history-row:hover, .history-row.open { background: var(--accent); }
+  .history-thread { padding: 4px 0; border-top: 1px solid var(--border); }
+  .history-thread:first-child { border-top: 0; }
   .spinner { display: inline-block; width: 10px; height: 10px; border: 2px solid var(--border); border-top-color: var(--primary); border-radius: 50%; animation: sr-spin .8s linear infinite; margin-right: 4px; }
   @keyframes sr-spin { to { transform: rotate(360deg); } }
   .run pre { margin: 0; max-height: 160px; overflow: auto; padding: 6px 8px; font-size: 13px; white-space: pre-wrap; word-break: break-word; background: var(--background); }
@@ -107,7 +111,7 @@
 /*__INLINE:pin__*/
 
 // ------------------------------------------------------------------ data
-const TEMPLATE_VERSION = 'v25'
+const TEMPLATE_VERSION = 'v26'
 let DATA = JSON.parse(document.getElementById('orca-panel-data').textContent || '{}')
 const PREVIEW = window.parent === window                       // opened in a normal browser (server /panel-preview)
 const PREVIEW_TOKEN = document.querySelector('meta[name="sr-token"]')?.content ?? null
@@ -309,6 +313,7 @@ function render({ keepScroll = false } = {}) {
   const viewState = session ? DATA.viewState?.[session.session.id] : null
   if (!UI.file && viewState?.file) UI.file = viewState.file
   if (ROUTE === 'overview') renderOverview()
+  else if (ROUTE === 'history') renderHistory(session)
   else renderReview(session)
   document.getElementById('title').textContent = ACTIVE_WORKTREE ? `${ACTIVE_WORKTREE.repoDisplayName} · ${ACTIVE_WORKTREE.branch}` : 'Self Review'
   restoreDraft()
@@ -326,8 +331,79 @@ function render({ keepScroll = false } = {}) {
   restoreFocus(focus)
 }
 function renderTabs() {
-  document.getElementById('tabs').innerHTML = h`<button type="button" class="tab ${ROUTE === 'review' ? 'active' : ''}" data-route="review">리뷰</button><button type="button" class="tab ${ROUTE === 'overview' ? 'active' : ''}" data-route="overview">전체 PR·세션</button>`
+  const current = activeSession()
+  const historyCount = current ? (DATA.runHistory?.[current.session.id] || []).length : 0
+  document.getElementById('tabs').innerHTML = h`<button type="button" class="tab ${ROUTE === 'review' ? 'active' : ''}" data-route="review">리뷰</button><button type="button" class="tab ${ROUTE === 'history' ? 'active' : ''}" data-route="history">AI 기록${historyCount ? ' (' + historyCount + ')' : ''}</button><button type="button" class="tab ${ROUTE === 'overview' ? 'active' : ''}" data-route="overview">전체 PR·세션</button>`
   for (const tab of document.querySelectorAll('.tab')) tab.addEventListener('pointerdown', (event) => { event.preventDefault(); ROUTE = tab.dataset.route; render({ keepScroll: false }); window.scrollTo(0, 0) })
+}
+
+// ------------------------------------------------------------------ AI run history
+// Every AI run of this worktree, newest first. One run can be opened to see the threads it received, the diff it
+// produced (saved when it finished, so it survives a commit) and the agent output.
+function historyRowHtml(row, openRunId) {
+  const open = row.id === openRunId
+  const when = new Date(row.startedAt)
+  const took = row.endedAt ? formatDuration(new Date(row.endedAt) - when) : '진행 중'
+  const outcome = row.mode === 'answer' ? '답변 ' + row.answeredCount + '/' + row.threadCount + '개' : '변경 파일 ' + row.changedCount + '개'
+  const pushed = row.published ? h` <span class="badge">푸시됨 ${String(row.published.commit).slice(0, 8)}</span>` : ''
+  const failed = row.publishFailed ? ' <span class="badge warn">푸시 실패</span>' : ''
+  const branch = row.branch ? h` <span class="muted small mono">${row.branch}</span>` : ''
+  return h`<div class="list-item history-row ${open ? 'open' : ''}" data-history-run="${row.id}" title="${open ? '눌러서 접기' : '눌러서 자세히 보기'}">
+    <span class="grow"><b>${row.mode === 'answer' ? 'AI 답변' : 'AI 수정'}</b> <span class="badge ${row.status === 'succeeded' ? '' : 'warn'}">${RUN_LABELS[row.status] || row.status}</span>${raw(pushed)}${raw(failed)}
+      <span class="muted small">${row.agent || ''} · ${when.toLocaleString()} · ${took} · 스레드 ${row.threadCount}개 · ${outcome}</span>${raw(branch)}</span>
+    <span class="muted small">${open ? '접기' : '자세히'}</span></div>`
+}
+function historyThreadsHtml(threads) {
+  if (!threads.length) return '<div class="card-body small muted">이 실행이 받은 스레드 기록이 없습니다 (기록 기능 이전의 실행).</div>'
+  const blocks = threads.map((thread) => {
+    const range = thread.startLine === thread.endLine ? thread.startLine : thread.startLine + '–' + thread.endLine
+    const comments = (thread.comments || []).map((comment) => h`<div class="comment ${comment.author === 'ai' ? 'ai' : ''}"><div class="meta"><span>${comment.author === 'ai' ? 'AI' : '나'}</span></div><div class="body">${comment.body}</div></div>`).join('')
+    return h`<div class="history-thread"><div class="mono small">${thread.path}:${range}</div>${raw(comments)}</div>`
+  })
+  return '<div class="card-body">' + blocks.join('') + '</div>'
+}
+
+function historyDetailHtml(detail) {
+  const started = new Date(detail.startedAt)
+  const answer = detail.mode === 'answer'
+  const result = answer ? '답변 ' + detail.answeredCount + '/' + detail.threadCount + '개를 스레드에 달았습니다.' : '변경 파일 ' + detail.changedCount + '개'
+  let pushed = ''
+  if (detail.published) pushed = h`<div style="margin-top:4px"><span class="badge">푸시됨</span> <span class="mono">${String(detail.published.commit).slice(0, 8)}</span> → <span class="mono">${detail.published.branch}</span></div>`
+  else if (detail.publishError) pushed = h`<div class="notice error" style="margin-top:4px">푸시 실패: ${detail.publishError.message}</div>`
+  const exit = detail.exitCode !== null && detail.exitCode !== undefined ? ' · exit ' + detail.exitCode : ''
+  const branch = detail.branch ? ' · ' + detail.branch : ''
+  return h`<div class="run">
+    <div class="card-head">${answer ? 'AI 답변' : 'AI 수정'} <span class="badge ${detail.status === 'succeeded' ? '' : 'warn'}">${RUN_LABELS[detail.status] || detail.status}</span><span class="muted small">${detail.agent || ''} · ${started.toLocaleString()}${exit}${branch}</span><span style="flex:1"></span><button type="button" class="btn ghost small" id="closeHistoryRun">닫기</button></div>
+    <div class="card-body small"><div>${result}</div>${raw(pushed)}</div>
+    <div class="card-head" style="border-top:1px solid var(--border)">이 실행이 받은 스레드 <span class="muted small">${(detail.threads || []).length}개</span></div>
+    ${raw(historyThreadsHtml(detail.threads || []))}
+    ${raw(answer ? '' : aiChangesHtml(detail, { history: true }))}
+    <details><summary class="small" style="padding:4px 8px">에이전트 출력 로그</summary><pre>${detail.logTail || '(출력 없음)'}</pre></details></div>`
+}
+
+function renderHistory(session) {
+  if (!session) {
+    app.innerHTML = h`<div class="card" style="margin-top:8px"><div class="card-body muted">리뷰 세션을 먼저 시작하면 AI 실행 기록이 여기에 쌓입니다.</div></div>`
+    return
+  }
+  const s = session.session
+  const rows = DATA.runHistory?.[s.id] || []
+  const detail = DATA.runDetail?.[s.id] || null
+  const empty = '<div class="muted small">아직 AI 실행 기록이 없습니다. 리뷰 화면에서 "리뷰 완료 및 AI 수정"이나 "AI 답변 요청"을 실행하면 여기에 남습니다.</div>'
+  app.innerHTML = h`
+    <div class="card" style="margin-top:8px">
+      <div class="card-body"><div class="row">${raw(worktreeSwitcherHtml())}<span class="muted small">이 worktree 의 AI 실행 ${rows.length}건 · 최신순</span></div></div>
+      <div class="card-body" style="padding:4px">${raw(rows.length ? rows.map((row) => historyRowHtml(row, detail && detail.runId)).join('') : empty)}</div>
+    </div>
+    ${raw(detail ? historyDetailHtml(detail) : '')}`
+  for (const item of app.querySelectorAll('[data-history-run]')) {
+    item.addEventListener('click', () => {
+      const same = detail && detail.runId === item.dataset.historyRun
+      act(() => send({ op: 'run.view', sessionId: s.id, runId: same ? null : item.dataset.historyRun }))
+    })
+  }
+  app.querySelector('#closeHistoryRun')?.addEventListener('click', () => act(() => send({ op: 'run.view', sessionId: s.id, runId: null })))
+  bindWorktreeSwitcher()
 }
 
 function renderOverview() {
@@ -482,14 +558,14 @@ function answerResultHtml(run) {
   const text = run.status === 'succeeded' ? '답변 ' + answered + '/' + total + '개를 스레드에 달았습니다.' + (answered < total ? ' 일부는 답변을 만들지 못했습니다. 로그를 확인하세요.' : '') : run.status === 'failed' ? '에이전트가 오류로 끝났습니다 (로그 확인).' : run.status === 'cancelled' ? '취소되었습니다.' : '서버 재시작으로 추적이 끊겼습니다.'
   return h`<div class="card-body small"><div>${text}</div></div>`
 }
-function aiChangesHtml(run) {
+function aiChangesHtml(run, { history = false } = {}) {
   const changes = run.aiChanges
   if (!changes) return ''
   if (changes.error) return h`<div class="card-body small muted">AI 변경 내용을 읽지 못했습니다: ${changes.error}</div>`
-  if (!changes.length) return '<div class="card-body small muted">변경 파일이 기록됐지만 현재 작업 트리에서는 차이가 없습니다 (이미 커밋했거나 되돌린 경우).</div>'
+  if (!changes.length) return history ? '<div class="card-body small muted">저장된 변경 내용이 없습니다 (기록 기능 이전의 실행이거나 변경 파일이 없던 실행).</div>' : '<div class="card-body small muted">변경 파일이 기록됐지만 현재 작업 트리에서는 차이가 없습니다 (이미 커밋했거나 되돌린 경우).</div>'
   const blocks = changes.map((file) => {
     const rows = []
-    if (file.binary || file.truncated || !file.hunks.length) rows.push('<div class="empty">' + (file.binary ? '바이너리 파일' : '패널에 표시하기엔 큽니다 — "넓게" 로 보세요.') + '</div>')
+    if (file.binary || file.truncated || !file.hunks.length) rows.push('<div class="empty">' + (file.binary ? '바이너리 파일' : history ? '크기가 커서 기록에 diff 를 싣지 못했습니다.' : '패널에 표시하기엔 큽니다 — "넓게" 로 보세요.') + '</div>')
     else {
       rows.push('<table class="diff"><colgroup><col class="g"><col class="m"><col></colgroup><tbody>')
       for (const hunk of file.hunks) {
@@ -503,7 +579,7 @@ function aiChangesHtml(run) {
     }
     return h`<div class="file-block" data-ai-file="${file.path}"><div class="file-head" style="position:static"><span class="name mono" title="${file.path}">${file.path}</span><span class="badge">${file.changeType}</span><span class="small"><span class="add-count">+${file.additions}</span> <span class="del-count">−${file.deletions}</span></span></div>${raw(rows.join(''))}</div>`
   })
-  return '<div class="card-head" style="border-top:1px solid var(--border)">AI 가 바꾼 내용 <span class="muted small">HEAD 대비 작업 트리 · 파일 ' + changes.length + '개 · 커밋 전</span></div><div style="padding:6px 0">' + blocks.join('') + '</div>'
+  return '<div class="card-head" style="border-top:1px solid var(--border)">AI 가 바꾼 내용 <span class="muted small">' + (history ? '실행 직후 기록 · 파일 ' + changes.length + '개' : 'HEAD 대비 작업 트리 · 파일 ' + changes.length + '개 · 커밋 전') + '</span></div><div style="padding:6px 0">' + blocks.join('') + '</div>'
 }
 let runTicker = null
 function startRunTicker(run) {

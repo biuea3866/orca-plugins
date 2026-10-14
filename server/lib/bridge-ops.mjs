@@ -10,7 +10,7 @@ export const BRIDGE_OPS = [
   'session.open', 'session.patch', 'session.delete', 'session.complete',
   'thread.add', 'thread.patch', 'thread.delete',
   'comment.add', 'comment.patch', 'comment.delete',
-  'run.start', 'run.cancel', 'run.publish',
+  'run.start', 'run.cancel', 'run.publish', 'run.view',
   'overview.refresh', 'view', 'wide', 'ping', 'worktree.pin', 'file.full'
 ]
 
@@ -93,6 +93,8 @@ export function validateOp(op) {
     case 'run.cancel':
     case 'run.publish':
       return requireString(op.runId, 64) ? { ok: true } : fail('runId required')
+    case 'run.view':
+      return requireSession(op) && (op.runId === null || requireString(op.runId, 64)) ? { ok: true } : fail('sessionId and runId (a run id, or null to close) required')
     case 'view':
       return requireSession(op) ? { ok: true } : fail('sessionId required')
     case 'file.full':
