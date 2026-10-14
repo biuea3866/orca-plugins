@@ -13,6 +13,7 @@
   .btn.primary { background: var(--primary); color: var(--primary-foreground); border-color: transparent; font-weight: 600; }
   .btn.danger { background: var(--destructive); color: var(--destructive-foreground); border-color: transparent; }
   .btn.ghost { background: transparent; }
+  .btn.mono { white-space: normal; overflow-wrap: anywhere; text-align: left; max-width: 100%; }
   .btn:disabled { opacity: .45; cursor: default; }
   .btn:focus-visible, select:focus-visible, textarea:focus-visible, .gutter:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
   select { background: var(--background); border: 1px solid var(--input); border-radius: var(--radius, 6px); padding: 2px 6px; max-width: 100%; }
@@ -35,7 +36,7 @@
   .tab.active { background: var(--card); border-color: var(--border); color: var(--foreground); font-weight: 600; }
   .list-item { display: flex; align-items: center; gap: 6px; padding: 4px 0; border-top: 1px solid var(--border); }
   .list-item:first-child { border-top: 0; }
-  .list-item .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .list-item .grow { flex: 1; min-width: 0; overflow-wrap: anywhere; white-space: normal; }
   .pr-title { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .file-item { display: flex; align-items: center; gap: 6px; padding: 3px 6px; border-radius: 4px; cursor: pointer; }
   .file-item:hover { background: var(--accent); }

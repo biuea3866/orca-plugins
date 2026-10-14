@@ -18,6 +18,20 @@ test('no text in the panel is smaller than 12px', () => {
   assert.deepEqual(sizes.filter((size) => size < MIN_TEXT_PX), [])
 })
 
+// Bigger text makes long repository paths wider than the narrow side panel: they must wrap instead of forcing a
+// horizontal scrollbar (path buttons in the AI run card), and list rows must wrap instead of cutting text off.
+test('long path buttons and list rows wrap instead of overflowing the panel', () => {
+  const pathButton = /\.btn\.mono\s*\{([^}]*)\}/.exec(css)
+  assert.ok(pathButton, 'a .btn.mono rule exists')
+  assert.match(pathButton[1], /white-space:\s*normal/)
+  assert.match(pathButton[1], /overflow-wrap:\s*anywhere/)
+  assert.match(pathButton[1], /max-width:\s*100%/)
+  const grow = /\.list-item \.grow\s*\{([^}]*)\}/.exec(css)
+  assert.ok(grow, 'a .list-item .grow rule exists')
+  assert.match(grow[1], /white-space:\s*normal/)
+  assert.doesNotMatch(grow[1], /text-overflow:\s*ellipsis/, 'text is wrapped, not cut with an ellipsis')
+})
+
 test('body text is at least 14px and code in the diff at least 13px, with a line height that fits it', () => {
   const body = /body\s*\{\s*font:\s*([\d.]+)px\/([\d.]+)/.exec(css)
   assert.ok(Number(body[1]) >= MIN_BASE_PX, `body font ${body[1]}px`)
