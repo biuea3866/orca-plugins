@@ -76,3 +76,61 @@ test('aliveIds filters registered ids down to live terminal handles or pty ids',
   const { keeper } = makeKeeper({ terminals: [{ handle: 'term_a', ptyId: 'pty_a', worktreePath: '/w' }] })
   assert.deepEqual(await keeper.aliveIds(['term_a', 'pty_zzz', 'term_gone']), ['term_a'])
 })
+
+function makeCappedKeeper(options = {}) {
+  const calls = []
+  const logs = []
+  const exec = async (command, args) => {
+    calls.push(args)
+    if (args[1] === 'list') return { code: 0, stdout: JSON.stringify({ ok: true, result: { terminals: [] } }), stderr: '' }
+    return { code: 0, stdout: JSON.stringify({ ok: true, result: { terminal: { handle: 'term_new' } } }), stderr: '' }
+  }
+  let clock = 0
+  const keeper = new BridgeKeeper({ exec, orcaBinary: 'orca', launcherPath: '/home/bin/open-review', now: () => clock, cooldownMs: 60_000, log: (message) => logs.push(message), ...options })
+  const creates = () => calls.filter((args) => args[1] === 'create').length
+  return { keeper, creates, logs, advance: (ms) => { clock += ms } }
+}
+
+test('a worktree gets at most 2 bridge terminals per 10 minutes, however many ticks come', async () => {
+  const { keeper, creates, advance } = makeCappedKeeper()
+  const outcomes = []
+  for (let tick = 0; tick < 8; tick += 1) { outcomes.push(await keeper.ensure('/w', [])); advance(61_000) } // ~8 minutes, each tick past the cooldown
+  assert.equal(creates(), 2)
+  assert.equal(outcomes.filter((outcome) => outcome.capped).length, 6)
+  assert.equal(outcomes.find((outcome) => outcome.capped).created, false)
+})
+
+test('the cap lifts once the window has passed', async () => {
+  const { keeper, creates, advance } = makeCappedKeeper()
+  for (let tick = 0; tick < 4; tick += 1) { await keeper.ensure('/w', []); advance(61_000) }
+  assert.equal(creates(), 2)
+  advance(10 * 60_000)
+  await keeper.ensure('/w', [])
+  assert.equal(creates(), 3)
+})
+
+test('all worktrees together get at most 6 bridge terminals per 10 minutes', async () => {
+  const { keeper, creates } = makeCappedKeeper()
+  const outcomes = []
+  for (let index = 0; index < 20; index += 1) outcomes.push(await keeper.ensure(`/w${index}`, []))
+  assert.equal(creates(), 6)
+  assert.equal(outcomes.filter((outcome) => outcome.capped).length, 14)
+})
+
+test('hitting the cap is logged once per window instead of on every tick', async () => {
+  const { keeper, logs, advance } = makeCappedKeeper()
+  for (let tick = 0; tick < 8; tick += 1) { await keeper.ensure('/w', []); advance(61_000) }
+  assert.equal(logs.filter((message) => /cap/i.test(message)).length, 1)
+})
+
+test('a live bridge is never counted against the cap', async () => {
+  const exec = async (command, args) => (args[1] === 'list'
+    ? { code: 0, stdout: JSON.stringify({ ok: true, result: { terminals: [{ handle: 'term_live' }] } }), stderr: '' }
+    : { code: 0, stdout: '{}', stderr: '' })
+  const keeper = new BridgeKeeper({ exec, orcaBinary: 'orca', launcherPath: '/x', now: () => 0 })
+  for (let tick = 0; tick < 10; tick += 1) {
+    const result = await keeper.ensure('/w', ['term_live'])
+    assert.equal(result.created, false)
+    assert.equal(result.capped, undefined)
+  }
+})

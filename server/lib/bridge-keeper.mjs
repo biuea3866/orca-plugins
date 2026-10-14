@@ -12,7 +12,13 @@ function filterAlive(terminals, registeredIds) {
 }
 
 export class BridgeKeeper {
-  constructor({ exec, orcaBinary, launcherPath, now = () => Date.now(), cooldownMs = 60_000, log = () => {} }) {
+  // Last line of defence against a runaway: whatever the cause, bridge terminals are created at most this often.
+  constructor({ exec, orcaBinary, launcherPath, now = () => Date.now(), cooldownMs = 60_000, log = () => {}, capWindowMs = 10 * 60_000, perWorktreeCap = 2, globalCap = 6 }) {
+    this.capWindowMs = capWindowMs
+    this.perWorktreeCap = perWorktreeCap
+    this.globalCap = globalCap
+    this.createdAt = []                 // { worktreePath, at } of recent creations
+    this.capLoggedAt = -Infinity
     this.exec = exec
     this.orcaBinary = orcaBinary
     this.launcherPath = launcherPath
@@ -51,7 +57,18 @@ export class BridgeKeeper {
     if (alive.length > 0) return { created: false, alive }
     const last = this.lastAttempt.get(worktreePath) ?? -Infinity
     if (this.now() - last < this.cooldownMs) return { created: false, alive, throttled: true }
-    this.lastAttempt.set(worktreePath, this.now())
+    const current = this.now()
+    this.createdAt = this.createdAt.filter((entry) => current - entry.at < this.capWindowMs)
+    const forWorktree = this.createdAt.filter((entry) => entry.worktreePath === worktreePath).length
+    if (forWorktree >= this.perWorktreeCap || this.createdAt.length >= this.globalCap) {
+      if (current - this.capLoggedAt >= this.capWindowMs) {
+        this.capLoggedAt = current
+        this.log(`bridge terminal creation capped (${forWorktree}/${this.perWorktreeCap} for ${worktreePath}, ${this.createdAt.length}/${this.globalCap} overall per ${Math.round(this.capWindowMs / 60_000)} min); not creating more`)
+      }
+      return { created: false, alive, capped: true }
+    }
+    this.createdAt.push({ worktreePath, at: current })
+    this.lastAttempt.set(worktreePath, current)
     const command = `${shellQuote(this.launcherPath)} --bridge`
     try {
       const result = await this.exec(this.orcaBinary, ['terminal', 'create', '--worktree', `path:${worktreePath}`, '--title', 'Self Review bridge', '--command', command, '--json'], { timeout: 20_000 })
