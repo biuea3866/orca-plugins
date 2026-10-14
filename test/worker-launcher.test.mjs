@@ -100,6 +100,66 @@ test('ensureServer throws a clear error when the server never becomes healthy', 
   )
 })
 
+test('concurrent ensureServer calls spawn the server only once (restored bridge terminals race on startup)', async () => {
+  const homeDir = makeHome()
+  writeRuntime(homeDir, { port: 47811, pid: 999999, token: 'stale', protocolVersion: 1 })
+  let healthy = false
+  let spawned = 0
+  const options = {
+    homeDir,
+    serverEntry: '/plugin/server/main.mjs',
+    fetchImpl: async () => { if (!healthy) throw new Error('ECONNREFUSED'); return healthyFetch() },
+    spawnImpl: () => {
+      spawned += 1
+      setTimeout(() => { writeRuntime(homeDir, { port: 50123, pid: 4242, token: 'fresh', protocolVersion: 1 }); healthy = true }, 5)
+      return { unref() {} }
+    },
+    sleepImpl: () => new Promise((resolve) => setTimeout(resolve, 2)),
+    timeoutMs: 2000
+  }
+  const results = await Promise.all(Array.from({ length: 6 }, () => ensureServer(options)))
+  assert.equal(spawned, 1)
+  assert.ok(results.every((runtime) => runtime.token === 'fresh'))
+  assert.equal(existsSync(join(homeDir, 'runtime', 'server.spawn.lock')), false, 'spawn lock must be released')
+})
+
+test('ensureServer takes over a stale spawn lock left by a dead launcher', async () => {
+  const homeDir = makeHome()
+  writeRuntime(homeDir, { port: 47811, pid: 999999, token: 'stale', protocolVersion: 1 })
+  writeFileSync(join(homeDir, 'runtime', 'server.spawn.lock'), JSON.stringify({ pid: 999999, at: Date.now() }))
+  let spawned = 0
+  let healthy = false
+  const result = await ensureServer({
+    homeDir,
+    serverEntry: '/plugin/server/main.mjs',
+    fetchImpl: async () => { if (!healthy) throw new Error('ECONNREFUSED'); return healthyFetch() },
+    spawnImpl: () => { spawned += 1; writeRuntime(homeDir, { port: 50123, pid: 4242, token: 'fresh', protocolVersion: 1 }); healthy = true; return { unref() {} } },
+    sleepImpl: async () => {},
+    timeoutMs: 1000
+  })
+  assert.equal(spawned, 1)
+  assert.equal(result.token, 'fresh')
+})
+
+test('ensureServer waits for a live spawn lock holder instead of spawning a second server', async () => {
+  const homeDir = makeHome()
+  writeRuntime(homeDir, { port: 47811, pid: 999999, token: 'stale', protocolVersion: 1 })
+  writeFileSync(join(homeDir, 'runtime', 'server.spawn.lock'), JSON.stringify({ pid: process.pid, at: Date.now() }))
+  let spawned = 0
+  let healthy = false
+  setTimeout(() => { writeRuntime(homeDir, { port: 50123, pid: 4242, token: 'fresh', protocolVersion: 1 }); healthy = true }, 10)
+  const result = await ensureServer({
+    homeDir,
+    serverEntry: '/plugin/server/main.mjs',
+    fetchImpl: async () => { if (!healthy) throw new Error('ECONNREFUSED'); return healthyFetch() },
+    spawnImpl: () => { spawned += 1; return { unref() {} } },
+    sleepImpl: () => new Promise((resolve) => setTimeout(resolve, 2)),
+    timeoutMs: 2000
+  })
+  assert.equal(spawned, 0)
+  assert.equal(result.token, 'fresh')
+})
+
 test('parseWorktreeCurrent extracts the path from orca worktree current --json', () => {
   const output = JSON.stringify({ ok: true, result: { worktree: { path: '/repo/x', branch: 'refs/heads/feat', displayName: 'feat' } } })
   assert.deepEqual(parseWorktreeCurrent(output), { path: '/repo/x', branch: 'feat', displayName: 'feat' })
