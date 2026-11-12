@@ -13,6 +13,7 @@ import { branchCards } from './lib/branches.mjs'
 import { discoverSiblingClones } from './lib/clones.mjs'
 import { applyFullFiles } from './lib/full-file.mjs'
 import { buildAnswerPrompt, selectAnswerableThreads, parseAnswers, newNonce } from './lib/answers.mjs'
+import {commitFixRun} from './lib/commit.mjs'
 import { publishRun } from './lib/publish.mjs'
 import { snapshotThreads, historyForSession, runBelongsToSession, summarizeRun, capChanges, buildExchanges, SNAPSHOT_MAX_BYTES, DETAIL_PANEL_MAX_BYTES, SUMMARY_MAX_CHARS, EMBEDDED_DIFF_RUNS, EMBEDDED_DIFF_MAX_BYTES, EMBEDDED_FILE_MAX_BYTES } from './lib/run-history.mjs'
 import { RunManager, defaultAgentCommands, pickRunToShow, filterIgnoredChanges } from './lib/runs.mjs'
@@ -20,7 +21,7 @@ import { annotateThreads } from './lib/anchor.mjs'
 import { buildPrompt, selectRunnableThreads } from './lib/prompt.mjs'
 import { parseUnifiedDiff } from './lib/diff-parser.mjs'
 import { execCommand } from './lib/exec.mjs'
-import { enrichPath, resolveBin } from './lib/bins.mjs'
+import { enrichPath, resolveBin, resolveLocalAgent } from './lib/bins.mjs'
 import { PanelPublisher, trimFilesForPanel, fitSessionsToBudget, PANEL_LOG_TAIL_BYTES, PANEL_DATA_MAX_BYTES } from './lib/panel-publisher.mjs'
 import { validateOp } from './lib/bridge-ops.mjs'
 import { BridgeKeeper } from './lib/bridge-keeper.mjs'
@@ -86,7 +87,7 @@ export function createServer({
   const github = new GitHubReader({ homeDir, exec, ghBinary: resolveBin('gh') ?? 'gh' })
   const runs = new RunManager({
     homeDir,
-    agentCommands: agentCommands ?? defaultAgentCommands((name) => resolveBin(name)),
+    agentCommands: agentCommands ?? defaultAgentCommands((name) => resolveLocalAgent(name)),
     git,
     now,
     onFinished: async (run) => {
@@ -94,7 +95,7 @@ export function createServer({
       else { try { store.setStatus(run.sessionId, 'rechecking') } catch { /* session gone */ } }
       publishPanel('run-finished')
       // The diff snapshot comes after the status flip and the first refresh: the card must not wait for git.
-      if (run.mode !== 'answer') { await recordFixOutcome(run); publishPanel('run-history') }
+      if (run.mode !== 'answer') { await recordFixOutcome(run);if(run.autoCommit&&run.status==='succeeded'){try{const result=await commitFixRun({exec,gitBinary:resolveBin('git')??'git',run:runs.get(run.id),session:store.getSession(run.sessionId)});const latest=runs.get(run.id);latest.committed=result;runs.save(latest)}catch(error){const latest=runs.get(run.id);latest.commitError={code:error.code,message:error.message};runs.save(latest)}} publishPanel('run-history') }
     },
     ignoreChangedPaths: [join(panelRoot, 'panel.html')]
   })
@@ -316,8 +317,9 @@ export function createServer({
     if (!session.repoPath || !existsSync(session.repoPath)) throw new ApiError(400, 'worktree_missing', 'this session has no local worktree to run an agent in')
     const diff = await sessionDiff(session)
     annotateThreads(diff.files, session.threads)
-    const threads = mode === 'answer' ? selectAnswerableThreads(session.threads) : selectRunnableThreads(session.threads)
-    if (threads.length === 0) throw new ApiError(400, 'no_runnable_threads', mode === 'answer' ? 'no open, up-to-date threads waiting for an answer' : 'no open, up-to-date threads to send to the agent')
+    let threads = mode === 'answer' ? selectAnswerableThreads(session.threads) : selectRunnableThreads(session.threads)
+    if(body.threadIds!==undefined){if(mode!=='answer'||!Array.isArray(body.threadIds)||!body.threadIds.length||body.threadIds.some(id=>typeof id!=='string'||!session.threads.some(t=>t.id===id)))throw new ApiError(400,'invalid_field','Choose existing review threads for an answer');const requested=new Set(body.threadIds);threads=threads.filter(t=>requested.has(t.id))}
+    if (threads.length === 0) throw new ApiError(400, 'no_runnable_threads', mode === 'answer' ? 'no open questions waiting for an answer; add a follow-up comment to request another reply' : 'no open, up-to-date threads to send to the agent')
     const nonce = newNonce()
     let prompt
     try {
@@ -326,7 +328,7 @@ export function createServer({
     } catch (error) {
       throw new ApiError(400, 'prompt_too_large', error.message)
     }
-    const run = await runs.start({ session, threadIds: threads.map((thread) => thread.id), agent, prompt, mode, nonce, meta: { branch: session.branch ?? null, threadSnapshots: snapshotThreads(threads) } })
+    const run = await runs.start({ session, threadIds: threads.map((thread) => thread.id), agent, prompt, mode, nonce, meta: {reviewPaths:[...new Set(threads.flatMap(thread=>[thread.path,...(thread.oldPath?[thread.oldPath]:[])]))],autoCommit:mode==='fix'&&body.autoCommit===true, branch: session.branch ?? null, threadSnapshots: snapshotThreads(threads) } })
     session.agent = agent
     if (mode === 'fix') session.status = 'fixing'
     store.save(session)

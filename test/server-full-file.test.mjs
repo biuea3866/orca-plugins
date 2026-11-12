@@ -31,7 +31,7 @@ function makeRepo() {
 test('fullContextFile returns every line of the file, not only the changed hunk', async () => {
   const repo = makeRepo()
   const normal = (await reader.workingTreeDiff(repo, { baseRef: 'main' })).files[0]
-  assert.ok(lineCount(normal) < 15, 'the normal diff only carries a few context lines')
+  assert.equal(lineCount(normal),41,'review defaults include the full file and unchanged context')
   const full = await reader.fullContextFile(repo, { baseRef: 'main', path: 'big.txt' })
   assert.equal(full.path, 'big.txt')
   assert.equal(full.hunks.length, 1)

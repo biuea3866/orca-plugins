@@ -49,14 +49,14 @@ const readPanelData = () => JSON.parse(/<script type="application\/json" id="orc
 
 after(async () => { await server.close() })
 
-test('file.full puts every line of one file into the panel data, view updates keep it, and turning it off restores the normal diff', async () => {
+test('file.full puts every line of one file into the panel data, view updates keep it, and turning it off retains full context by default', async () => {
   const opened = await api('POST', '/api/bridge', { op: 'session.open', worktreePath: repo, baseRef: 'main' })
   assert.equal(opened.status, 200)
   const sessionId = opened.body.result.id
   await server.settlePanel()
   const normal = readPanelData().sessions[sessionId].diff.files[0]
   assert.equal(normal.path, 'big.txt')
-  assert.ok(lineCount(normal) < 15)
+  assert.equal(lineCount(normal),41)
   assert.equal(normal.fullContext, undefined)
 
   const on = await api('POST', '/api/bridge', { op: 'file.full', sessionId, path: 'big.txt', full: true })
@@ -78,7 +78,7 @@ test('file.full puts every line of one file into the panel data, view updates ke
   assert.equal(off.status, 200)
   await server.settlePanel()
   data = readPanelData()
-  assert.ok(lineCount(data.sessions[sessionId].diff.files[0]) < 15)
+  assert.equal(lineCount(data.sessions[sessionId].diff.files[0]),41)
   assert.deepEqual(data.viewState[sessionId].fullFiles, [])
 })
 
@@ -90,6 +90,6 @@ test('file.full for a path that is not in the diff is accepted and ignored', asy
   await server.settlePanel()
   const file = readPanelData().sessions[sessionId].diff.files[0]
   assert.equal(file.path, 'big.txt')
-  assert.ok(lineCount(file) < 15, 'other files are untouched')
+  assert.equal(lineCount(file),41,'other files retain the full-file default')
   await api('POST', '/api/bridge', { op: 'file.full', sessionId, path: 'not-in-diff.txt', full: false })
 })

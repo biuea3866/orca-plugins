@@ -61,7 +61,8 @@ export async function publishRun({ exec, gitBinary = 'git', run, session }) {
   // A previous attempt that committed but failed to push left its commit at HEAD: only the push is repeated.
   const headBefore = (await git(['rev-parse', 'HEAD'])).stdout.trim()
   let commit = headBefore
-  if (!(run.publishError?.commit && run.publishError.commit === headBefore)) {
+  if(run.committed?.commit && run.committed.commit!==headBefore)refuse('HEAD moved after this run was committed; review before pushing')
+  if (!(run.committed?.commit===headBefore || (run.publishError?.commit && run.publishError.commit === headBefore))) {
     await git(['--literal-pathspecs', 'add', '--', ...paths])
     const threads = (run.threadIds ?? []).length
     const committed = await git(['--literal-pathspecs', 'commit', '-q', '-m', `fix: 리뷰 코멘트 반영 (스레드 ${threads}개)`, '-m', `Local Self Review AI 수정 실행 ${run.id}${run.agent ? ` (${run.agent})` : ''}`, '--', ...paths], { allowFailure: true })

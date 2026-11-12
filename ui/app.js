@@ -1,7 +1,8 @@
 // Local Self Review UI — vanilla ES modules, no build step.
+import {syntaxLanguage,tokenizeSourceLine} from '/ui/lib/syntax.mjs'
 import { createApi, ApiRequestError } from '/ui/lib/api.mjs'
 import { beginSelection, extendSelection, clampRange, isLineSelected } from '/ui/lib/selection.mjs'
-import { placeThreads, threadKey, countRunnable, countByFile } from '/ui/lib/threads.mjs'
+import { placeThreads, threadKey, countRunnable, countByFile, answeredCommentIds, countAnswerable } from '/ui/lib/threads.mjs'
 
 const token = document.querySelector('meta[name="sr-token"]')?.content ?? ''
 const api = createApi({ token })
@@ -38,13 +39,14 @@ function describeError(error) {
 function applyTheme(theme) {
   if (theme) document.documentElement.setAttribute('data-theme', theme)
   else document.documentElement.removeAttribute('data-theme')
+  const toggle=document.getElementById('themeToggle');if(toggle){toggle.textContent=theme==='light'?'VS Code Light+':'VS Code Dark+';toggle.title='VS Code Dark+ / Light+ 전환'}
 }
 function currentTheme() {
   const explicit = document.documentElement.getAttribute('data-theme')
   if (explicit) return explicit
   return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
 }
-try { applyTheme(localStorage.getItem('sr-theme')) } catch { /* ignore */ }
+try { applyTheme(localStorage.getItem('sr-theme')||'dark') } catch { /* ignore */ }
 document.getElementById('themeToggle').addEventListener('click', () => {
   const next = currentTheme() === 'dark' ? 'light' : 'dark'
   applyTheme(next)
@@ -83,9 +85,13 @@ async function bootstrap() {
     history.replaceState(null, '', location.pathname + location.hash)
     try {
       const context = await api.get(`/api/context?path=${encodeURIComponent(target)}`)
-      const session = await api.post('/api/sessions', { kind: 'local', repoPath: context.repoPath, baseRef: context.defaultBase })
-      location.hash = `#/sessions/${session.id}`
-      if (location.hash === `#/sessions/${session.id}`) await render()
+      let session = await api.post('/api/sessions', { kind: 'local', repoPath: context.repoPath, baseRef: context.defaultBase, agent:'claude', includeWorkingTree:false, includeUntracked:false })
+      // Opening from a repository starts with its committed branch diff, even
+      // when a prior review temporarily included AI edits or untracked files.
+      if(session.includeWorkingTree || session.includeUntracked || session.agent!=='claude')session=await api.patch(`/api/sessions/${session.id}`,{revision:session.revision,agent:'claude',includeWorkingTree:false,includeUntracked:false})
+      const destination = `#/sessions/${session.id}`
+      if (location.hash === destination) await render()
+      else location.hash = destination
       return
     } catch (error) {
       showNotice(`세션을 열지 못했습니다: ${describeError(error)}`, { error: true, timeout: 0 })
@@ -183,7 +189,10 @@ async function renderOverview() {
         button.disabled = true
         try {
           const context = await api.get(`/api/context?path=${encodeURIComponent(button.dataset.startReview)}`)
-          const session = await api.post('/api/sessions', { kind: 'local', repoPath: context.repoPath, baseRef: context.defaultBase })
+          let session = await api.post('/api/sessions', { kind: 'local', repoPath: context.repoPath, baseRef: context.defaultBase, agent:'claude', includeWorkingTree:false, includeUntracked:false })
+      // Opening from a repository starts with its committed branch diff, even
+      // when a prior review temporarily included AI edits or untracked files.
+      if(session.includeWorkingTree || session.includeUntracked || session.agent!=='claude')session=await api.patch(`/api/sessions/${session.id}`,{revision:session.revision,agent:'claude',includeWorkingTree:false,includeUntracked:false})
           location.hash = `#/sessions/${session.id}`
         } catch (error) { showNotice(describeError(error), { error: true }); button.disabled = false }
       })
@@ -200,7 +209,7 @@ async function renderOverview() {
 }
 
 // ---------- diff viewer (shared) ----------
-function createDiffViewer({ files, threads, canComment, onCreateThread, onThreadAction, onComment }) {
+function createDiffViewer({ files, threads, canComment, onCreateThread, onThreadAction, onComment, onAnswer }) {
   const root = document.createElement('div')
   root.className = 'review-layout'
   const fileList = document.createElement('div')
@@ -209,6 +218,36 @@ function createDiffViewer({ files, threads, canComment, onCreateThread, onThread
   root.append(fileList, filePanelHost)
   const state = { activePath: files[0]?.path ?? null, selection: null, dragging: false, pendingForm: null, expandedResolved: new Set(), collapsed: new Set() }
   let currentThreads = threads
+  let viewerDisposed = false
+  const renderedFiles = new Set(files.length ? [files[0].path] : [])
+  const nearFiles = new Set()
+  const lazy = new IntersectionObserver(entries => {
+    if (viewerDisposed) return
+    for (const entry of entries) {
+      const path = entry.target.dataset.filePanel
+      if (entry.isIntersecting) { nearFiles.add(path); if (!renderedFiles.has(path)) { renderedFiles.add(path); redrawFile(path) } }
+      else nearFiles.delete(path)
+    }
+    for (const path of renderedFiles) {
+      if (renderedFiles.size <= 5) break
+      const panel = filePanelHost.querySelector(`[data-file-panel="${CSS.escape(path)}"]`)
+      if (!nearFiles.has(path) && path !== state.activePath && path !== state.selection?.path && !panel?.contains(document.activeElement)) { renderedFiles.delete(path); redrawFile(path) }
+    }
+  }, { rootMargin: '800px 0px' })
+  let paintFrame = null
+  function paintSelection() {
+    paintFrame = null
+    for (const row of filePanelHost.querySelectorAll('tr.selected')) row.classList.remove('selected')
+    if (!state.selection) return
+    const {startLine,endLine} = clampRange(state.selection)
+    const panel = filePanelHost.querySelector(`[data-file-panel="${CSS.escape(state.selection.path)}"]`)
+    for (const cell of panel?.querySelectorAll(`.gutter[data-side="${state.selection.side}"]`) ?? []) {
+      const line = Number(cell.dataset.line)
+      if (line >= startLine && line <= endLine) cell.parentElement.classList.add('selected')
+    }
+  }
+  function schedulePaint() { if (paintFrame === null) paintFrame = requestAnimationFrame(paintSelection) }
+
 
   function drawFileList() {
     const counts = countByFile(currentThreads)
@@ -219,7 +258,7 @@ function createDiffViewer({ files, threads, canComment, onCreateThread, onThread
       const item = document.createElement('div')
       item.className = `file-item${file.path === state.activePath ? ' active' : ''}`
       item.innerHTML = h`<span class="badge small">${{ added: 'A', modified: 'M', deleted: 'D', renamed: 'R', untracked: 'U' }[file.changeType] ?? '?'}</span><span class="name" title="${file.path}">${file.path}</span><span class="counts small"><span class="add-count">+${file.additions}</span> <span class="del-count">−${file.deletions}</span>${counts[file.path] ? raw(` <span class="badge">💬${counts[file.path]}</span>`) : ''}</span>`
-      item.addEventListener('click', () => { state.activePath = file.path; state.collapsed.delete(file.path); redrawFile(file.path); drawFileList(); document.getElementById(fileDomId(file.path))?.scrollIntoView({ block: 'start' }) })
+      item.addEventListener('click', () => { state.activePath = file.path; renderedFiles.add(file.path); state.collapsed.delete(file.path); redrawFile(file.path); drawFileList(); document.getElementById(fileDomId(file.path))?.scrollIntoView({ block: 'start' }) })
       body.append(item)
     }
   }
@@ -239,6 +278,14 @@ function createDiffViewer({ files, threads, canComment, onCreateThread, onThread
     return cell
   }
 
+  const syntaxCache=new WeakMap()
+  function syntaxLines(file){
+    if(syntaxCache.has(file))return syntaxCache.get(file)
+    const result=new Map(),before=syntaxLanguage(file.oldPath||file.path),after=syntaxLanguage(file.path)
+    for(const hunk of file.hunks){let oldState='',newState='';for(const line of hunk.lines){let tokens;if(line.type!=='add'){const parsed=tokenizeSourceLine(line.text,before,oldState);oldState=parsed.state;tokens=parsed.tokens}if(line.type!=='del'){const parsed=tokenizeSourceLine(line.text,after,newState);newState=parsed.state;tokens=parsed.tokens}result.set(line,tokens)}}
+    syntaxCache.set(file,result);return result
+  }
+
   function lineRow(file, line) {
     const row = document.createElement('tr')
     row.className = line.type
@@ -248,7 +295,9 @@ function createDiffViewer({ files, threads, canComment, onCreateThread, onThread
     marker.textContent = line.type === 'add' ? '+' : line.type === 'del' ? '−' : ''
     const code = document.createElement('td')
     code.className = 'code'
-    code.textContent = line.text
+    const tokens=syntaxLines(file).get(line)
+    if(tokens)for(const token of tokens){if(token.type){const span=document.createElement('span');span.className='syntax-'+token.type;span.textContent=token.text;code.append(span)}else code.append(document.createTextNode(token.text))}
+    else code.textContent = line.text
     row.append(marker, code)
     for (const side of ['old', 'new']) {
       const number = side === 'old' ? line.oldNo : line.newNo
@@ -270,6 +319,7 @@ function createDiffViewer({ files, threads, canComment, onCreateThread, onThread
   function threadElement(thread) {
     const element = document.createElement('div')
     const expanded = state.expandedResolved.has(thread.id)
+    const answered = answeredCommentIds(thread.comments)
     element.className = `thread${thread.status === 'resolved' ? ' resolved' : ''}${expanded ? ' expanded' : ''}`
     const range = thread.startLine === thread.endLine ? `L${thread.startLine}` : `L${thread.startLine}–L${thread.endLine}`
     element.innerHTML = h`
@@ -279,17 +329,19 @@ function createDiffViewer({ files, threads, canComment, onCreateThread, onThread
         <span class="mono">${thread.side} ${range}</span>
         <span class="spacer"></span>
         ${thread.status === 'resolved' ? raw(`<button type="button" class="btn small ghost" data-toggle>${expanded ? '접기' : '펼치기'}</button>`) : ''}
+        ${onAnswer?raw(h`<button type="button" class="btn small" data-ai-answer ${raw(countAnswerable([thread])?'':'disabled')} title="이 스레드의 질문에 로컬 AI가 답글로 답합니다">AI 답변 요청</button>`):''}
         <button type="button" class="btn small" data-thread-status="${thread.status === 'open' ? 'resolved' : 'open'}">${thread.status === 'open' ? '해결' : '다시 열기'}</button>
         <button type="button" class="btn small danger" data-thread-delete>삭제</button>
       </div>
       <div class="thread-body">
         ${raw(thread.comments.map((comment) => h`
-          <div class="comment" data-comment="${comment.id}">
-            <div class="meta"><span>나</span><span>${formatDate(comment.createdAt)}</span>${comment.updatedAt !== comment.createdAt ? raw('<span>(수정됨)</span>') : ''}<span class="spacer"></span><button type="button" class="btn small ghost" data-comment-edit>수정</button><button type="button" class="btn small ghost" data-comment-delete>삭제</button></div>
+          <div class="comment ${comment.author === 'ai' ? 'ai' : ''}" data-comment="${comment.id}" data-author="${comment.author === 'ai' ? 'ai' : 'reviewer'}">
+            <div class="meta"><span>${comment.author === 'ai' ? 'AI 답변 · ' + (comment.agent || 'AI') : '나'}</span>${comment.author !== 'ai' && answered.has(comment.id) ? raw('<span class="badge answer-check" aria-label="답변 완료" title="이 질문에 AI 답글이 달렸습니다">✓ 답변 완료</span>') : ''}<span>${formatDate(comment.createdAt)}</span>${comment.updatedAt !== comment.createdAt ? raw('<span>(수정됨)</span>') : ''}<span class="spacer"></span><button type="button" class="btn small ghost" data-comment-edit>수정</button><button type="button" class="btn small ghost" data-comment-delete>삭제</button></div>
             <div class="body">${comment.body}</div>
           </div>`).join(''))}
         <div class="comment-form"><textarea placeholder="답글…" rows="2"></textarea><div class="actions"><button type="button" class="btn small primary" data-reply>답글</button></div></div>
       </div>`
+    element.querySelector('[data-ai-answer]')?.addEventListener('click',()=>onAnswer(thread))
     element.querySelector('[data-toggle]')?.addEventListener('click', () => { if (expanded) state.expandedResolved.delete(thread.id); else state.expandedResolved.add(thread.id); drawFile() })
     element.querySelector('[data-thread-status]').addEventListener('click', (event) => onThreadAction(thread, { status: event.currentTarget.dataset.threadStatus }))
     element.querySelector('[data-thread-delete]').addEventListener('click', () => { if (confirm('스레드를 삭제할까요?')) onThreadAction(thread, { delete: true }) })
@@ -314,7 +366,7 @@ function createDiffViewer({ files, threads, canComment, onCreateThread, onThread
 
   function commentFormRow(colspan) {
     const row = document.createElement('tr')
-    row.className = 'thread-row'
+    row.className = 'thread-row selection-form-row'
     const cell = document.createElement('td')
     cell.colSpan = colspan
     const { startLine, endLine } = clampRange(state.selection)
@@ -346,6 +398,14 @@ function createDiffViewer({ files, threads, canComment, onCreateThread, onThread
     head.querySelector('[data-toggle-file]').addEventListener('click', () => { if (state.collapsed.has(file.path)) state.collapsed.delete(file.path); else state.collapsed.add(file.path); redrawFile(file.path) })
     panel.append(head)
     if (collapsed) return panel
+    if (!renderedFiles.has(file.path)) {
+      const placeholder = document.createElement('div')
+      placeholder.className = 'diff-lazy-placeholder'
+      placeholder.setAttribute('aria-label', '파일 diff 대기')
+      placeholder.style.height = Math.max(40, file.hunks.reduce((n,h)=>n+h.lines.length*20+24,0)) + 'px'
+      panel.append(placeholder)
+      return panel
+    }
     if (file.binary || file.truncated || file.hunks.length === 0) {
       const box = document.createElement('div')
       box.className = 'notice-box'
@@ -392,9 +452,16 @@ function createDiffViewer({ files, threads, canComment, onCreateThread, onThread
 
   /** GitHub "Files changed" layout: every file in sequence. */
   function drawFile() {
+    lazy.disconnect()
     filePanelHost.innerHTML = ''
-    if (files.length === 0) { filePanelHost.innerHTML = '<div class="card"><div class="notice-box">변경 사항이 없습니다.</div></div>'; return }
-    for (const file of files) filePanelHost.append(buildFilePanel(file))
+    if (files.length === 0) filePanelHost.innerHTML = '<div class="card"><div class="notice-box">변경 사항이 없습니다.</div></div>'
+    for (const file of files) { const panel = buildFilePanel(file); filePanelHost.append(panel); lazy.observe(panel) }
+    const detached=currentThreads.filter(thread=>!files.some(file=>file.path===thread.path))
+    if(detached.length){
+      const section=document.createElement('section');section.className='card detached-threads';section.setAttribute('aria-label','이전 코드 코멘트');section.innerHTML='<div class="card-head">이전 코드 코멘트</div><div class="notice-box">현재 diff에서 제외된 파일의 코멘트입니다. 질문과 답글은 이어갈 수 있으며 AI 코드 수정 대상에서는 제외됩니다.</div>'
+      for(const thread of detached){const entry=document.createElement('div');entry.className='notice-box';const path=document.createElement('strong');path.textContent=thread.path;const original=document.createElement('details');const summary=document.createElement('summary');summary.textContent='코멘트 작성 당시 코드';const code=document.createElement('pre');code.textContent=thread.selectedText;original.append(summary,code);entry.append(path,original,threadElement(thread));section.append(entry)}
+      filePanelHost.append(section)
+    }
   }
 
   /** Redraws one file panel only (drag selection, collapse toggles). */
@@ -402,7 +469,8 @@ function createDiffViewer({ files, threads, canComment, onCreateThread, onThread
     const file = files.find((entry) => entry.path === path)
     const old = filePanelHost.querySelector(`[data-file-panel="${CSS.escape(path)}"]`)
     if (!file || !old) { drawFile(); return }
-    old.replaceWith(buildFilePanel(file))
+    lazy.unobserve(old)
+    const next = buildFilePanel(file); old.replaceWith(next); lazy.observe(next)
   }
 
   function hasLine(file, side, number) {
@@ -420,20 +488,19 @@ function createDiffViewer({ files, threads, canComment, onCreateThread, onThread
     if (!cell || event.button !== 0) return
     event.preventDefault()
     state.pendingForm = null
-    const previousPath = state.selection?.path
+    for (const form of filePanelHost.querySelectorAll('.selection-form-row')) form.remove()
     state.selection = event.shiftKey && state.selection ? extendSelection(state.selection, cell) : beginSelection(cell)
     state.dragging = true
-    if (previousPath && previousPath !== state.selection.path) redrawFile(previousPath)
-    redrawFile(state.selection.path)
+    schedulePaint()
   })
   filePanelHost.addEventListener('mouseover', (event) => {
     if (!state.dragging) return
     const cell = cellFromEvent(event)
     if (!cell) return
     const next = extendSelection(state.selection, cell)
-    if (next !== state.selection) { state.selection = next; redrawFile(state.selection.path) }
+    if (next !== state.selection) { state.selection = next; schedulePaint() }
   })
-  const finishDrag = () => { if (!state.dragging) return; state.dragging = false; if (state.selection) { state.pendingForm = true; redrawFile(state.selection.path) } }
+  const finishDrag = () => { if (!state.dragging) return; state.dragging = false; if (paintFrame !== null) cancelAnimationFrame(paintFrame); paintSelection(); if (state.selection) { state.pendingForm = true; redrawFile(state.selection.path) } }
   window.addEventListener('mouseup', finishDrag)
   filePanelHost.addEventListener('keydown', (event) => {
     const cell = cellFromEvent(event)
@@ -453,8 +520,13 @@ function createDiffViewer({ files, threads, canComment, onCreateThread, onThread
   drawFile()
   return {
     element: root,
-    update(nextThreads) { currentThreads = nextThreads; state.selection = null; state.pendingForm = null; drawFileList(); drawFile() },
-    dispose() { window.removeEventListener('mouseup', finishDrag) }
+    update(nextThreads) {
+      const changed = new Set(state.selection ? [state.selection.path] : [])
+      for (const path of new Set([...currentThreads,...nextThreads].map(t=>t.path))) if (JSON.stringify(currentThreads.filter(t=>t.path===path)) !== JSON.stringify(nextThreads.filter(t=>t.path===path))) changed.add(path)
+      currentThreads = nextThreads; state.selection = null; state.pendingForm = null; drawFileList()
+      for (const path of changed) redrawFile(path)
+    },
+    dispose() { viewerDisposed = true; lazy.disconnect(); if (paintFrame !== null) cancelAnimationFrame(paintFrame); window.removeEventListener('mouseup', finishDrag) }
   }
 }
 
@@ -467,18 +539,20 @@ async function renderSession(sessionId) {
   if (session.kind === 'local') { try { context = await api.get(`/api/context?path=${encodeURIComponent(session.repoPath)}`) } catch { /* ignore */ } }
   let activeRun = null
   let pollTimer = null
+  let polling = false, disposed = false
   let logOffset = 0
   let logText = ''
 
   const headEl = document.createElement('div')
   headEl.className = 'session-head'
+  const actionsEl=document.createElement('div');actionsEl.className='session-actions review-actions-bar';actionsEl.setAttribute('role','group');actionsEl.setAttribute('aria-label','AI 리뷰 작업')
+  const resize=new ResizeObserver(()=>{document.documentElement.style.setProperty('--review-actions-height',`${actionsEl.getBoundingClientRect().height}px`);document.documentElement.style.setProperty('--topbar-height',`${document.querySelector('.topbar').getBoundingClientRect().height}px`)});resize.observe(actionsEl);resize.observe(document.querySelector('.topbar'))
   const runEl = document.createElement('div')
   runEl.className = 'run-panel'
   runEl.hidden = true
-  const viewer = createDiffViewer({
-    files: diff.files,
-    threads: session.threads,
+  const viewerHandlers = {
     canComment: true,
+    onAnswer:thread=>startRun('answer',[thread.id]),
     onCreateThread: (selection) => mutate(() => api.post(`/api/sessions/${session.id}/threads`, { revision: session.revision, path: selection.path, oldPath: diff.files.find((file) => file.path === selection.path)?.oldPath ?? null, side: selection.side, startLine: selection.startLine, endLine: selection.endLine, selectedText: selectedText(selection), body: selection.body })),
     onThreadAction: (thread, action) => mutate(() => action.delete ? api.delete(`/api/sessions/${session.id}/threads/${thread.id}`, { revision: session.revision }) : api.patch(`/api/sessions/${session.id}/threads/${thread.id}`, { revision: session.revision, status: action.status })),
     onComment: (thread, action) => mutate(() => {
@@ -486,9 +560,10 @@ async function renderSession(sessionId) {
       if (action.edit) return api.patch(`/api/sessions/${session.id}/threads/${thread.id}/comments/${action.edit}`, { revision: session.revision, body: action.body })
       return api.delete(`/api/sessions/${session.id}/threads/${thread.id}/comments/${action.delete}`, { revision: session.revision })
     })
-  })
+  }
+  let viewer = createDiffViewer({files:diff.files,threads:session.threads,...viewerHandlers})
   app.innerHTML = ''
-  app.append(headEl, runEl, viewer.element)
+  app.append(headEl, actionsEl, runEl, viewer.element)
 
   function selectedText(selection) {
     const file = diff.files.find((entry) => entry.path === selection.path)
@@ -501,18 +576,7 @@ async function renderSession(sessionId) {
   }
 
   async function reload({ silent = false } = {}) {
-    try {
-      const detail = await api.get(`/api/sessions/${session.id}`)
-      session = detail.session
-      diff = detail.diff
-      viewer.dispose()
-      const fresh = createDiffViewer({ files: diff.files, threads: session.threads, canComment: true, onCreateThread: viewer.onCreateThread, onThreadAction: viewer.onThreadAction, onComment: viewer.onComment })
-      // keep handlers: rebuild by re-rendering the whole view is simpler and safe
-      fresh.dispose()
-      await render()
-    } catch (error) {
-      if (!silent) showNotice(describeError(error), { error: true })
-    }
+    try { await render() } catch (error) { if (!silent) showNotice(describeError(error), {error:true}) }
   }
 
   async function mutate(operation) {
@@ -532,46 +596,59 @@ async function renderSession(sessionId) {
 
   function drawHead() {
     const runnable = countRunnable(session.threads)
+    const awaiting = countAnswerable(session.threads)
+    const agentAvailable=agents[session.agent]?.available||(session.agent==='claude'&&agents.codex?.available)
     const agentOptions = ['claude', 'codex'].map((name) => {
-      const available = agents[name]?.available
-      return h`<option value="${name}" ${raw(session.agent === name ? 'selected' : '')} ${raw(available ? '' : 'disabled')}>${name}${available ? '' : ' (설치 안 됨)'}</option>`
+      const available = agents[name]?.available||(name==='claude'&&agents.codex?.available)
+      return h`<option value="${name}" ${raw(session.agent === name ? 'selected' : '')} ${raw(available ? '' : 'disabled')}>${name==='claude'?'로컬 Claude → Codex':'로컬 Codex'}${available ? '' : ' (설치 안 됨)'}</option>`
     }).join('')
-    const canRun = Boolean(session.repoPath) && runnable > 0 && agents[session.agent]?.available && !(activeRun && (activeRun.status === 'running' || activeRun.status === 'queued'))
-    const reason = !session.repoPath ? '로컬 worktree가 없어 AI 수정을 실행할 수 없습니다' : !agents[session.agent]?.available ? `${session.agent} CLI를 찾을 수 없습니다` : runnable === 0 ? '열려 있고 최신인 스레드가 없습니다' : activeRun && (activeRun.status === 'running' || activeRun.status === 'queued') ? '실행 중' : ''
+    const canRun = Boolean(session.repoPath) && runnable > 0 && agentAvailable && !(activeRun && (activeRun.committing || activeRun.status === 'running' || activeRun.status === 'queued'))
+    const canAnswer = Boolean(session.repoPath) && awaiting > 0 && agentAvailable && !(activeRun && (activeRun.committing || activeRun.status === 'running' || activeRun.status === 'queued'))
+    const reason = !session.repoPath ? '로컬 worktree가 없어 AI 수정을 실행할 수 없습니다' : !agentAvailable ? `${session.agent} CLI를 찾을 수 없습니다` : runnable === 0 ? '열려 있고 최신인 스레드가 없습니다' : activeRun && (activeRun.committing || activeRun.status === 'running' || activeRun.status === 'queued') ? '실행 중' : ''
     headEl.innerHTML = h`
       <div>
-        <div class="title">${session.repoDisplayName} <span class="mono">${session.branch}</span> ${session.kind === 'pr' ? raw(h`<a class="badge" href="#/prs/${encodeURIComponent(session.pr.owner)}/${encodeURIComponent(session.pr.repo)}/${session.pr.number}">PR #${session.pr.number}</a>`) : ''}</div>
+        <div class="title">${session.repoDisplayName} <span class="mono">${context?.branch ?? session.branch}</span> ${session.kind === 'pr' ? raw(h`<a class="badge" href="#/prs/${encodeURIComponent(session.pr.owner)}/${encodeURIComponent(session.pr.repo)}/${session.pr.number}">PR #${session.pr.number}</a>`) : ''}</div>
         <div class="path">${session.repoPath ?? '(로컬 worktree 없음 — 읽기 전용 PR diff)'}</div>
       </div>
       <span class="badge">${session.status}</span>
       ${session.kind === 'local' ? raw(h`<label>base <select id="baseRef">${raw((context?.baseCandidates ?? [session.baseRef]).map((candidate) => h`<option value="${candidate}" ${raw(candidate === session.baseRef ? 'selected' : '')}>${candidate}</option>`).join(''))}</select></label>
       <label><input type="checkbox" id="workingTree" ${raw(session.includeWorkingTree ? 'checked' : '')}> 미커밋 변경 포함</label>
       ${session.includeWorkingTree ? raw(h`<label><input type="checkbox" id="untracked" ${raw(session.includeUntracked ? 'checked' : '')}> untracked 포함</label>`) : ''}`) : ''}
-      <span class="spacer"></span>
-      <label>에이전트 <select id="agent">${raw(agentOptions)}</select></label>
+      <div class="session-actions" role="group" aria-label="AI 리뷰 작업">
+      <span class="badge local-agent-label" title="설치된 CLI를 직접 실행합니다">로컬 CLI</span><label>에이전트 <select id="agent">${raw(agentOptions)}</select></label>
       <button type="button" class="btn" id="refreshDiff" title="diff 다시 계산">diff 새로고침</button>
-      <button type="button" class="btn primary" id="runFix" ${raw(canRun ? '' : 'disabled')} title="${reason}">리뷰 완료 및 AI 수정 (${runnable})</button>
+      <button type="button" class="btn" id="runAnswer" ${raw(canAnswer ? '' : 'disabled')} title="질문한 코멘트에 같은 스레드의 답글로 답합니다. 코드는 수정하지 않습니다.">AI 답변 요청 (${awaiting})</button>
+      <button type="button" class="btn primary" id="runFix" ${raw(canRun ? '' : 'disabled')} title="${reason || 'AI 수정 파일만 로컬 커밋합니다. 푸시는 하지 않습니다.'}">리뷰 완료 및 AI 수정·커밋 (${runnable})</button>
       ${session.status !== 'completed' ? raw('<button type="button" class="btn" id="complete">세션 완료</button>') : ''}
+      </div>
       <span class="muted small">거터 드래그/Shift+클릭으로 멀티라인 선택 · <span class="kbd">Enter</span> 1줄 · <span class="kbd">Shift+↑↓</span> 확장</span>`
-    headEl.querySelector('#baseRef')?.addEventListener('change', async (event) => { await mutate(() => api.patch(`/api/sessions/${session.id}`, { revision: session.revision, baseRef: event.target.value })); await reload() })
-    headEl.querySelector('#untracked')?.addEventListener('change', async (event) => { await mutate(() => api.patch(`/api/sessions/${session.id}`, { revision: session.revision, includeUntracked: event.target.checked })); await reload() })
-    headEl.querySelector('#workingTree')?.addEventListener('change', async (event) => { await mutate(() => api.patch(`/api/sessions/${session.id}`, { revision: session.revision, includeWorkingTree: event.target.checked })); await reload() })
-    headEl.querySelector('#agent').addEventListener('change', (event) => mutate(() => api.patch(`/api/sessions/${session.id}`, { revision: session.revision, agent: event.target.value })))
-    headEl.querySelector('#refreshDiff').addEventListener('click', () => reload())
-    headEl.querySelector('#complete')?.addEventListener('click', async () => {
+    const controls=headEl.querySelector('.session-actions');actionsEl.replaceChildren(...controls.childNodes);controls.remove()
+    const control=selector=>headEl.querySelector(selector)||actionsEl.querySelector(selector)
+    control('#baseRef')?.addEventListener('change', async (event) => { await mutate(() => api.patch(`/api/sessions/${session.id}`, { revision: session.revision, baseRef: event.target.value })); await reload() })
+    control('#untracked')?.addEventListener('change', async (event) => { await mutate(() => api.patch(`/api/sessions/${session.id}`, { revision: session.revision, includeUntracked: event.target.checked })); await reload() })
+    control('#workingTree')?.addEventListener('change', async (event) => { await mutate(() => api.patch(`/api/sessions/${session.id}`, { revision: session.revision, includeWorkingTree: event.target.checked })); await reload() })
+    control('#agent').addEventListener('change', (event) => mutate(() => api.patch(`/api/sessions/${session.id}`, { revision: session.revision, agent: event.target.value })))
+    control('#refreshDiff').addEventListener('click', () => reload())
+    control('#complete')?.addEventListener('click', async () => {
       const open = session.threads.filter((thread) => thread.status === 'open').length
       if (open > 0 && !confirm(`열린 스레드가 ${open}개 남아 있습니다. 그래도 완료할까요?`)) return
       await mutate(() => api.patch(`/api/sessions/${session.id}`, { revision: session.revision, status: 'completed' }))
     })
-    headEl.querySelector('#runFix').addEventListener('click', startRun)
+    control('#runFix').addEventListener('click', () => startRun('fix'))
+    control('#runAnswer').addEventListener('click', () => startRun('answer'))
   }
 
-  async function startRun() {
+  async function startRun(mode = 'fix',threadIds) {
     try {
-      const run = await api.post(`/api/sessions/${session.id}/runs`, { revision: session.revision, agent: session.agent })
+      if(mode === 'fix' && session.kind === 'local' && !session.includeWorkingTree){
+        session = await api.patch(`/api/sessions/${session.id}`, {revision:session.revision, includeWorkingTree:true})
+        drawHead()
+      }
+      const run = await api.post(`/api/sessions/${session.id}/runs`, { revision: session.revision, agent: session.agent, mode,...(threadIds?{threadIds}:{}),autoCommit:mode==='fix' })
       await trackRun(run.id)
       await mutate(async () => (await api.get(`/api/sessions/${session.id}`)).session)
     } catch (error) {
+      if(error instanceof ApiRequestError && error.code === 'no_runnable_threads'){await reloadThreadsOnly();showNotice(mode === 'answer'?'답변을 기다리는 열린 질문이 없습니다. 기존 답변 아래에 새 코멘트를 남기면 다시 요청할 수 있습니다.':'현재 코드와 일치하는 열린 코멘트가 없습니다. diff를 새로고침하고 코멘트 위치를 확인해 주세요.');return}
       if (error instanceof ApiRequestError && error.status === 409 && error.extra?.runId) { showNotice('이미 실행 중인 작업이 있어 그 작업을 표시합니다.'); await trackRun(error.extra.runId); return }
       if (error instanceof ApiRequestError && error.status === 409) { await reload({ silent: true }); showNotice('세션이 변경되어 다시 불러왔습니다. 다시 시도하세요.', { error: true }); return }
       showNotice(describeError(error), { error: true })
@@ -582,11 +659,12 @@ async function renderSession(sessionId) {
     if (!activeRun) { runEl.hidden = true; return }
     runEl.hidden = false
     const elapsedMs = (activeRun.endedAt ? new Date(activeRun.endedAt) : new Date()) - new Date(activeRun.startedAt)
-    const live = activeRun.status === 'running' || activeRun.status === 'queued'
+    const live = activeRun.committing || activeRun.status === 'running' || activeRun.status === 'queued'
     runEl.innerHTML = h`
-      <div class="card-head">AI 수정 <span class="badge status-${activeRun.status}">${activeRun.status}</span><span class="muted small">${activeRun.agent} · ${Math.round(elapsedMs / 1000)}초 · 스레드 ${activeRun.threadIds.length}개${activeRun.exitCode !== null ? ` · exit ${activeRun.exitCode}` : ''}</span><span style="flex:1"></span>
-        ${live ? raw('<button type="button" class="btn small danger" id="cancelRun">취소</button>') : raw('<button type="button" class="btn small" id="closeRun">닫기</button>')}
+      <div class="card-head">${activeRun.mode === 'answer' ? 'AI 답변' : 'AI 수정'} <span class="badge status-${activeRun.status}">${activeRun.status}</span><span class="muted small">로컬 ${activeRun.agent}${activeRun.fallbackFrom?' (Claude 대체)':''} · ${Math.round(elapsedMs / 1000)}초 · 스레드 ${activeRun.threadIds.length}개${activeRun.exitCode !== null ? ` · exit ${activeRun.exitCode}` : ''}</span><span style="flex:1"></span>
+        ${activeRun.committing ? '' : live ? raw('<button type="button" class="btn small danger" id="cancelRun">취소</button>') : raw('<button type="button" class="btn small" id="closeRun">닫기</button>')}
       </div>
+      ${activeRun.committing?raw('<div class="card-body">AI 수정 파일 커밋 중…</div>'):activeRun.committed?.commit?raw(h`<div class="card-body">커밋 완료 <code>${activeRun.committed.commit.slice(0,12)}</code> · ${activeRun.committed.paths.length}개 파일</div>`):activeRun.commitError?raw(h`<div role="alert" class="card-body dialog-error">AI 수정은 완료됐지만 커밋하지 못했습니다: ${activeRun.commitError.message}</div>`):activeRun.committed?.skipped?raw('<div class="card-body">추가 변경이 없어 커밋을 만들지 않았습니다.</div>'):''}
       ${activeRun.changedFiles?.length ? raw(h`<div class="card-body small"><strong>변경 파일</strong> ${activeRun.changedFiles.join(', ')} — <a href="#" id="afterRefresh">diff 새로고침</a> 후 스레드별로 직접 해결 처리하세요.</div>`) : ''}
       <pre id="runLog"></pre>`
     runEl.querySelector('#runLog').textContent = logText || (live ? '로그 대기 중…' : '(로그 없음)')
@@ -600,27 +678,44 @@ async function renderSession(sessionId) {
     logOffset = 0
     logText = ''
     const poll = async () => {
+      if (polling || disposed) return
+      polling = true
       try {
         const payload = await api.get(`/api/runs/${runId}?logFrom=${logOffset}`)
+        if (disposed) return
         activeRun = payload.run
         logText += payload.log
         logOffset = payload.logNext
         drawRun()
         drawHead()
-        if (!(activeRun.status === 'running' || activeRun.status === 'queued')) { clearInterval(pollTimer); pollTimer = null; await reloadThreadsOnly() }
-      } catch (error) { clearInterval(pollTimer); showNotice(describeError(error), { error: true }) }
+        if (!(activeRun.committing || activeRun.status === 'running' || activeRun.status === 'queued')) { clearInterval(pollTimer); pollTimer = null; await refreshAfterRun() }
+      } catch (error) { if (!disposed) {clearInterval(pollTimer); showNotice(describeError(error), { error: true })} }
+      finally {polling = false}
     }
     await poll()
-    if (activeRun && (activeRun.status === 'running' || activeRun.status === 'queued')) pollTimer = setInterval(poll, 2000)
+    if (!disposed && activeRun && (activeRun.committing || activeRun.status === 'running' || activeRun.status === 'queued')) pollTimer = setInterval(poll, 2000)
+  }
+
+  async function refreshAfterRun() {
+    if(activeRun?.mode !== 'fix')return reloadThreadsOnly()
+    try{
+      const detail=await api.get(`/api/sessions/${session.id}`)
+      if(disposed)return
+      session=detail.session;diff=detail.diff
+      const old=viewer;old.dispose()
+      viewer=createDiffViewer({files:diff.files,threads:session.threads,...viewerHandlers})
+      old.element.replaceWith(viewer.element);drawHead()
+      showNotice(activeRun.committed?.commit?`AI 수정 결과를 커밋했습니다: ${activeRun.committed.commit.slice(0,12)}`:activeRun.commitError?'AI 수정 결과를 작업 트리 기준으로 갱신했습니다. 커밋 오류를 확인해 주세요.':'AI 수정 결과를 작업 트리 기준으로 갱신했습니다. 미커밋 변경이 포함됩니다.')
+    }catch(error){if(!disposed)showNotice(describeError(error),{error:true})}
   }
 
   async function reloadThreadsOnly() {
-    try { const detail = await api.get(`/api/sessions/${session.id}`); session = detail.session; viewer.update(session.threads); drawHead() } catch { /* ignore */ }
+    try { const detail = await api.get(`/api/sessions/${session.id}`); if (disposed) return; session = detail.session; viewer.update(session.threads); drawHead() } catch { /* ignore */ }
   }
 
   drawHead()
   drawRun()
-  return { dispose() { clearInterval(pollTimer); viewer.dispose() } }
+  return { dispose() { disposed = true; resize.disconnect();document.documentElement.style.removeProperty('--review-actions-height'); clearInterval(pollTimer); viewer.dispose() } }
 }
 
 // ---------- PR detail ----------

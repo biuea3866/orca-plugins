@@ -113,3 +113,12 @@ test('listSessions returns summaries with thread counts and deleteSession remove
   assert.equal(existsSync(join(homeDir, 'sessions', `${session.id}.json`)), false)
   assert.throws(() => store.getSession(session.id), (error) => error instanceof ApiError && error.status === 404)
 })
+
+
+test('local reviews are isolated by branch while same-branch comments and options survive reuse',()=>{
+ const {store}=makeStore(),first=store.createSession(localInput);
+ const updated=store.updateSession(first.id,{revision:first.revision,includeWorkingTree:true,includeUntracked:true});
+ const other=store.createSession({...localInput,branch:'feat/other'});
+ assert.notEqual(other.id,first.id);assert.equal(other.includeWorkingTree,false);assert.equal(other.includeUntracked,false);
+ const reused=store.createSession(localInput);assert.equal(reused.id,first.id);assert.equal(reused.revision,updated.revision);assert.equal(reused.includeUntracked,true);
+});
