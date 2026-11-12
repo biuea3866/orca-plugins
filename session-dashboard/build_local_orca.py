@@ -24,8 +24,8 @@ def patch_renderer(text):
     if 'function z({tabKey:e})' in text:
         helper = (ROOT / 'host-patch/panel-data-document.js').read_text()
         navigation = (ROOT / 'host-patch/dashboard-terminal-navigation.js').read_text()
-        hook = '''(0,C.useEffect)(()=>{if(o.status===`ready`&&m===S&&o.panelData!==void 0)g.current?.contentWindow?.postMessage({type:PANEL_DATA_TYPE,data:o.panelData},`*`)},[o,m,S]),(0,C.useEffect)(()=>{if(!f||o.status!==`ready`)return;let active=true;const handler=createDashboardTerminalNavigation({pluginKey:v,panelId:y,getWindow:()=>g.current?.contentWindow??null,getData:()=>o.panelData,isActive:()=>active,focus:terminal=>window.api.runtime.call({method:`terminal.focus`,params:{terminal,navigation:`host`}})});window.addEventListener(`message`,handler);return()=>{active=false;window.removeEventListener(`message`,handler)}},[v,y,f,o]),'''
-        text = replace_once(text, 'return(0,C.useEffect)(()=>{if(!f||!x)return;', 'return' + hook + '(0,C.useEffect)(()=>{if(!f||!x)return;')
+        hook = '''(0,C.useEffect)(()=>{if(o.status===`ready`&&m===S&&o.panelData!==void 0)g.current?.contentWindow?.postMessage({type:PANEL_DATA_TYPE,data:o.panelData},`*`)},[o,m,S]),(0,C.useEffect)(()=>{if(!f||o.status!==`ready`)return;let active=true;const handler=createDashboardTerminalNavigation({pluginKey:v,panelId:y,getWindow:()=>g.current?.contentWindow??null,getData:()=>dashboardPanelData.current,isActive:()=>active,focus:terminal=>window.api.runtime.call({method:`terminal.focus`,params:{terminal,navigation:`host`}})});window.addEventListener(`message`,handler);return()=>{active=false;window.removeEventListener(`message`,handler)}},[v,y,f,o.status]),'''
+        text = replace_once(text, 'return(0,C.useEffect)(()=>{if(!f||!x)return;', 'const dashboardPanelData=C.useRef(null);dashboardPanelData.current=o.status===`ready`?o.panelData:null;return' + hook + '(0,C.useEffect)(()=>{if(!f||!x)return;')
         text = replace_once(text,
             'a.html!==n&&(n=a.html,r+=1,i(e,`healthy`),l({status:`ready`,shellHtml:a.html,documentRevision:r}))',
             '(()=>{const document=readPanelDataDocument(a.html);if(document.identity!==n){n=document.identity;r+=1;i(e,`healthy`);l({status:`ready`,shellHtml:a.html,documentRevision:r,panelData:document.data})}else if(document.data!==void 0){l(previous=>previous.status===`ready`?{...previous,panelData:document.data}:previous)}})()')
@@ -43,8 +43,8 @@ def patch_renderer(text):
 
 def add_terminal_navigation(text):
     helper = (ROOT / 'host-patch/dashboard-terminal-navigation.js').read_text()
-    hook = '''(0,v.useEffect)(()=>{if(!s||a.status!==`ready`)return;let active=true;const handler=createDashboardTerminalNavigation({pluginKey:m,panelId:h,getWindow:()=>f.current?.contentWindow??null,getData:()=>a.panelData,isActive:()=>active,focus:terminal=>window.api.runtime.call({method:`terminal.focus`,params:{terminal,navigation:`host`}})});window.addEventListener(`message`,handler);return()=>{active=false;window.removeEventListener(`message`,handler)}},[m,h,s,a]),'''
-    return helper + replace_once(text, 'return(0,v.useEffect)(()=>{if(a.status===`ready`', 'return' + hook + '(0,v.useEffect)(()=>{if(a.status===`ready`')
+    hook = '''(0,v.useEffect)(()=>{if(!s||a.status!==`ready`)return;let active=true;const handler=createDashboardTerminalNavigation({pluginKey:m,panelId:h,getWindow:()=>f.current?.contentWindow??null,getData:()=>dashboardPanelData.current,isActive:()=>active,focus:terminal=>window.api.runtime.call({method:`terminal.focus`,params:{terminal,navigation:`host`}})});window.addEventListener(`message`,handler);return()=>{active=false;window.removeEventListener(`message`,handler)}},[m,h,s,a.status]),'''
+    return helper + replace_once(text, 'return(0,v.useEffect)(()=>{if(a.status===`ready`', 'const dashboardPanelData=v.useRef(null);dashboardPanelData.current=a.status===`ready`?a.panelData:null;return' + hook + '(0,v.useEffect)(()=>{if(a.status===`ready`')
 
 
 def entries(tree, prefix=''):

@@ -37,9 +37,18 @@ export function createDashboardTerminalNavigation(options: {
     if (pending.has(requestId)) return
     if (pending.size >= 1) { reply(false, '다른 터미널로 이동 중입니다.'); return }
     pending.add(requestId)
-    void options.focus(request.terminal).then(
-      result => reply(result.ok, result.ok ? undefined : '터미널이 닫혔거나 연결되지 않았습니다.'),
-      () => reply(false, '터미널 이동에 실패했습니다.')
-    ).finally(() => pending.delete(requestId))
+    let settled = false
+    const finish = (ok: boolean, error?: string): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      pending.delete(requestId)
+      reply(ok, error)
+    }
+    const timeout = setTimeout(() => finish(false, '터미널 이동 요청 시간이 초과되었습니다. 다시 시도해주세요.'), 6000)
+    void Promise.resolve().then(() => options.focus(request.terminal as string)).then(
+      result => finish(result.ok, result.ok ? undefined : '터미널이 닫혔거나 연결되지 않았습니다.'),
+      () => finish(false, '터미널 이동에 실패했습니다.')
+    )
   }
 }

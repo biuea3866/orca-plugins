@@ -307,7 +307,8 @@ def run(collector, plugin_dir, interval, persistent_frame=False):
                                            'requests': session['requests'], 'llmUsage': session['llmUsage']}
         snapshot['kpi'] = module['_kpi'](snapshot['sessions'])
         inquiries.save()
-        live_frame = persistent_frame and host_support.check(time.monotonic())
+        snapshot['terminalNavigationSupported'] = host_support.check(time.monotonic())
+        live_frame = persistent_frame and snapshot['terminalNavigationSupported']
         snapshot['panelUpdateMode'] = 'persistent-frame' if live_frame else 'document'
         if not live_frame:
             snapshot['panelUpdateNote'] = '현재 앱은 화면 유지 갱신을 지원하지 않아 패널 갱신 간격을 최소 30초로 제한합니다. Orca Dashboard 수정 앱으로 실행하면 실시간 갱신 중에도 화면이 유지됩니다.'

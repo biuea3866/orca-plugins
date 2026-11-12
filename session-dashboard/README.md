@@ -70,6 +70,14 @@ open "$HOME/Applications/Orca Dashboard 1.4.224.app"
 
 카드와 상세 화면의 **터미널로 이동** 버튼은 해당 프로젝트와 터미널 탭·분할 패널로 이동합니다. 연결된 터미널이 없는 세션은 버튼을 비활성화합니다. 이동 중 또는 실패 시 버튼 옆에 상태를 표시합니다. 로컬 호스트의 이동 처리는 이 대시보드 플러그인과 현재 데이터에 포함된 터미널 핸들만 허용하며, 고정된 `terminal.focus` 호출을 사용합니다. 터미널 입력이나 셸 명령을 실행하지 않습니다.
 
+정식 앱은 이 이동 요청을 처리하지 않으므로 버튼을 비활성화하고 수정 앱이 필요하다는 안내를 표시합니다. 수정 앱에서는 실시간 데이터가 바뀌어도 이동 처리기를 유지해 응답을 놓치지 않으며, 이동 응답이 지연되면 시간 초과를 알리고 재시도를 허용합니다. 이전 수정 앱에는 갱신 중 응답 누락 문제가 있으므로 최신 코드로 새 앱을 만들어 사용합니다.
+
+```sh
+python3 session-dashboard/build_local_orca.py --target "$HOME/Applications/Orca Dashboard 1.4.224 Navigation.app"
+```
+
+Orca를 종료한 뒤 새 `Orca Dashboard 1.4.224 Navigation.app`으로 실행하면 기존 `--persistent-frame` 수집기가 지원 여부를 자동으로 감지합니다.
+
 검증:
 
 ```sh
