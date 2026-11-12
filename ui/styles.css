@@ -180,3 +180,9 @@ th { color: var(--muted); font-weight: 600; font-size: 12px; }
 .syntax-keyword { color:var(--syntax-keyword); }.syntax-string { color:var(--syntax-string); }.syntax-comment { color:var(--syntax-comment); }.syntax-number { color:var(--syntax-number); }.syntax-type,.syntax-annotation { color:var(--syntax-type); }.syntax-function { color:var(--syntax-function); }.syntax-variable { color:var(--syntax-variable); }
 html { scroll-padding-top:calc(var(--topbar-height) + var(--review-actions-height) + 16px); }
 .file-panel,.thread,.gutter,.thread button { scroll-margin-top:calc(var(--topbar-height) + var(--review-actions-height) + 16px); }
+/* Keep the editor itself in the VS Code theme; diff colors belong to the gutters. */
+.diff { background:var(--bg); font-family:Consolas,"SFMono-Regular",Menlo,monospace; font-size:13px; line-height:22px; tab-size:4; }
+.diff td.code,.diff tr.add td.code,.diff tr.del td.code { background:var(--bg); color:var(--fg); padding:0 12px; }
+.diff tr.add td.code { box-shadow:inset 2px 0 var(--success); }
+.diff tr.del td.code { box-shadow:inset 2px 0 var(--danger); }
+.diff .gutter { background:var(--bg); }
