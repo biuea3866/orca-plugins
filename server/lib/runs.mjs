@@ -13,14 +13,14 @@ const TERMINAL_STATES = new Set(['succeeded', 'failed', 'cancelled', 'interrupte
 export function defaultAgentCommands(resolveBin) {
   return {
     claude: {
-      command: resolveBin('claude'),
+      command: resolveBin('claude'),localCLI:true,
       args: ['-p', '--output-format', 'text', '--permission-mode', 'acceptEdits', '--allowedTools', 'Read', 'Edit', 'Write', 'MultiEdit', 'Grep', 'Glob', 'LS'],
       // "AI 답변": read-only. Nothing that edits or runs commands is allowed, and the default permission mode cannot prompt in -p.
       answerArgs: ['-p', '--output-format', 'text', '--permission-mode', 'default', '--allowedTools', 'Read', 'Grep', 'Glob', 'LS', '--disallowedTools', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Bash'],
       env: {}
     },
     codex: {
-      command: resolveBin('codex'),
+      command: resolveBin('codex'),localCLI:true,
       args: (cwd) => ['exec', '--full-auto', '--skip-git-repo-check', '-C', cwd, '-'],
       answerArgs: (cwd) => ['exec', '--sandbox', 'read-only', '--skip-git-repo-check', '-C', cwd, '-'],
       env: {}
@@ -29,7 +29,7 @@ export function defaultAgentCommands(resolveBin) {
 }
 
 /** Fingerprints every dirty/untracked path so edits to already-dirty files are detected after a run. */
-function fingerprintPaths(cwd, paths) {
+export function fingerprintPaths(cwd, paths) {
   const fingerprints = {}
   for (const relativePath of paths.slice(0, 5000)) {
     const absolute = join(cwd, relativePath)
@@ -120,6 +120,7 @@ export class RunManager {
 
   recover() {
     for (const run of this.list()) {
+      if(run.committing){run.committing=false;run.commitError={message:'Server stopped during commit. Inspect Git history before retrying.'};this.save(run)}
       if ((run.status === 'running' || run.status === 'queued') && !pidAlive(run.pid)) {
         run.status = 'interrupted'
         run.endedAt = this.now()
@@ -129,19 +130,21 @@ export class RunManager {
   }
 
   runningFor(cwd) {
-    return this.list().find((run) => run.cwd === cwd && (run.status === 'running' || run.status === 'queued') && (this.children.has(run.id) || pidAlive(run.pid))) ?? null
+    return this.list().find((run) => run.cwd === cwd && (run.committing || ((run.status === 'running' || run.status === 'queued') && (this.children.has(run.id) || pidAlive(run.pid))))) ?? null
   }
 
   availability() {
     const report = {}
     for (const [name, spec] of Object.entries(this.agentCommands)) {
-      report[name] = { available: Boolean(spec?.command) && existsSync(spec.command), path: spec?.command ?? null }
+      report[name] = { available: Boolean(spec?.command) && existsSync(spec.command), path: spec?.command ?? null, execution:'local-cli', ...(name==='claude'?{fallback:'codex',fallbackAvailable:Boolean(this.agentCommands.codex?.command)&&existsSync(this.agentCommands.codex.command)}:{}) }
     }
     return report
   }
 
   async start({ session, threadIds, agent, prompt, mode = 'fix', nonce = null, meta = {} }) {
-    const spec = this.agentCommands[agent]
+    const requestedAgent=agent
+    let spec = this.agentCommands[agent]
+    if(agent==='claude'&&(!spec?.command||!existsSync(spec.command))&&this.agentCommands.codex?.command&&existsSync(this.agentCommands.codex.command)){agent='codex';spec=this.agentCommands.codex}
     if (!spec?.command || !existsSync(spec.command)) throw new ApiError(400, 'agent_unavailable', `${agent} CLI is not installed or not found on PATH`)
     // An answer run must never fall back to the edit command line: without a read-only one it is refused.
     if (mode === 'answer' && !spec.answerArgs) throw new ApiError(400, 'answer_unsupported', `${agent} has no read-only answer command configured`)
@@ -154,6 +157,8 @@ export class RunManager {
       id: makeId('run'),
       sessionId: session.id,
       agent,
+      requestedAgent,
+      ...(requestedAgent!==agent?{fallbackFrom:requestedAgent,fallbackReason:'Claude CLI unavailable'}:{}),
       mode,
       nonce,
       threadIds,
@@ -170,10 +175,9 @@ export class RunManager {
     writeFileSync(join(this.runDir(run.id), 'prompt.md'), prompt, { mode: 0o600 })
     const dirtyBefore = await this.git.porcelainStatus(session.repoPath).catch(() => [])
     run.fingerprintsBefore = fingerprintPaths(session.repoPath, dirtyBefore)
+    if(run.autoCommit){run.headBefore=(await this.git.run(session.repoPath,['rev-parse','HEAD'])).stdout.trim();run.branchBefore=await this.git.currentBranch(session.repoPath);if(run.branchBefore!==session.branch)throw new ApiError(409,'branch_mismatch','The review branch changed before the AI fix. Reopen Self Review.')}
     this.save(run)
 
-    const argSource = mode === 'answer' ? spec.answerArgs : spec.args
-    const args = typeof argSource === 'function' ? argSource(session.repoPath) : argSource
     const logPath = join(this.runDir(run.id), 'output.log')
     const logStream = createWriteStream(logPath, { flags: 'a', mode: 0o600 })
     let written = 0
@@ -184,13 +188,19 @@ export class RunManager {
       logStream.write(slice)
     }
 
+
+    const launch=async(attempt)=>{
+    const spec=this.agentCommands[attempt],argSource=mode==='answer'?spec.answerArgs:spec.args,args=typeof argSource==='function'?argSource(session.repoPath):argSource
+    run.agent=attempt;run.status='running';run.endedAt=null;run.exitCode=null
+    const childEnv={...process.env,...(spec.env??{})}
+    if(spec.localCLI){if(childEnv.ANTHROPIC_BASE_URL){delete childEnv.ANTHROPIC_AUTH_TOKEN;delete childEnv.ANTHROPIC_API_KEY}if(childEnv.OPENAI_BASE_URL||childEnv.OPENAI_API_BASE)delete childEnv.OPENAI_API_KEY;for(const key of ['ANTHROPIC_BASE_URL','OPENAI_BASE_URL','OPENAI_API_BASE','CLAUDECODE'])delete childEnv[key]}
     let child
     try {
       child = spawn(spec.command, args, {
         cwd: session.repoPath,
         detached: true,
         stdio: ['pipe', 'pipe', 'pipe'],
-        env: { ...process.env, ...(spec.env ?? {}) }
+        env: childEnv
       })
     } catch (error) {
       run.status = 'failed'
@@ -209,8 +219,6 @@ export class RunManager {
     child.stdin.on('error', () => {})
     child.stdin.end(prompt)
     child.on('close', async (code, signal) => {
-      logStream.end()
-      this.children.delete(run.id)
       const latest = this.get(run.id)
       if (latest.status !== 'cancelled') {
         latest.status = code === 0 ? 'succeeded' : 'failed'
@@ -219,9 +227,19 @@ export class RunManager {
       latest.exitCode = code
       latest.endedAt = this.now()
       latest.changedFiles = await this.collectChangedFiles(latest)
+      if(this.get(run.id).status==='cancelled')latest.status='cancelled'
+      const fallback=this.agentCommands.codex
+      if(latest.status==='failed'&&latest.agent==='claude'&&requestedAgent==='claude'&&latest.changedFiles.length===0&&fallback?.command&&existsSync(fallback.command)&&(mode!=='answer'||fallback.answerArgs)){
+        latest.fallbackFrom='claude';latest.fallbackReason=`Claude exited with code ${code} before changing files`;latest.status='running';latest.agent='codex';latest.endedAt=null;this.save(latest);Object.assign(run,latest);append(Buffer.from('\n[Local Self Review] Claude 실행 실패 — 로컬 Codex로 전환합니다.\n'));await launch('codex');return
+      }
+      logStream.end()
+      if(latest.autoCommit&&latest.status==='succeeded'){latest.fingerprintsAfter=fingerprintPaths(latest.cwd,latest.changedFiles);latest.committing=true}
       this.save(latest)
       try { await this.onFinished(latest) } catch { /* ignore */ }
+      finally{this.children.delete(run.id);const done=this.get(run.id);if(done.committing){done.committing=false;this.save(done)}}
     })
+    }
+    await launch(agent)
     return run
   }
 
@@ -270,6 +288,6 @@ export class RunManager {
   }
 
   hasRunning() {
-    return this.list().some((run) => run.status === 'running' || run.status === 'queued')
+    return this.list().some((run) => run.committing || run.status === 'running' || run.status === 'queued')
   }
 }

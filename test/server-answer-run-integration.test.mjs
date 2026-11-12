@@ -128,3 +128,19 @@ test('an unknown run mode is rejected', async () => {
   const bad = await api('POST', `/api/sessions/${sessionId}/runs`, { revision: (await session()).revision, agent: 'claude', mode: 'bogus' })
   assert.equal(bad.status, 400)
 })
+
+test('a follow-up on a removed diff line receives an inline answer while edit execution remains blocked',async()=>{
+ const before=readFileSync(join(repo,'a.js'),'utf8');writeFileSync(join(repo,'a.js'),'const a = 1\n');
+ await api('PATCH',`/api/sessions/${sessionId}`,{revision:(await session()).revision,includeWorkingTree:true});
+ await api('POST',`/api/sessions/${sessionId}/threads/${threadId}/comments`,{revision:(await session()).revision,body:'삭제된 코드에 대해서도 설명해 주세요'});
+ const current=await session();assert.equal(current.threads[0].applicability,'outdated');const count=current.threads[0].comments.length;
+ const fix=await api('POST',`/api/sessions/${sessionId}/runs`,{revision:current.revision,mode:'fix'});assert.equal(fix.status,400);assert.equal(fix.body.error.code,'no_runnable_threads');
+ const answer=await api('POST',`/api/sessions/${sessionId}/runs`,{revision:(await session()).revision,agent:'claude',mode:'answer'});assert.equal(answer.status,202);
+ const done=await waitFor(async()=>{const s=await session();return s.threads[0].comments.length===count+1?s:null});assert.ok(done);assert.equal(done.threads[0].comments.at(-1).author,'ai');assert.match(readFileSync(promptOut,'utf8'),/과거 스냅샷/);assert.equal(readFileSync(join(repo,'a.js'),'utf8'),'const a = 1\n');writeFileSync(join(repo,'a.js'),before);
+});
+
+test('a thread-level answer request answers only the selected question',async()=>{
+ const added=await api('POST',`/api/sessions/${sessionId}/threads`,{revision:(await session()).revision,path:'a.js',side:'new',startLine:1,endLine:1,selectedText:'const a = 1',body:'다른 질문입니다'});assert.equal(added.status,200);const other=added.body.threads.at(-1).id;
+ await api('POST',`/api/sessions/${sessionId}/threads/${threadId}/comments`,{revision:(await session()).revision,body:'이 질문만 답해주세요'});const count=(await session()).threads.find(t=>t.id===threadId).comments.length;
+ const started=await api('POST',`/api/sessions/${sessionId}/runs`,{revision:(await session()).revision,agent:'claude',mode:'answer',threadIds:[threadId]});assert.equal(started.status,202);assert.deepEqual(started.body.threadIds,[threadId]);const done=await waitFor(async()=>{const s=await session();return s.threads.find(t=>t.id===threadId).comments.length===count+1?s:null});assert.ok(done);assert.equal(done.threads.find(t=>t.id===other).comments.length,1);
+});

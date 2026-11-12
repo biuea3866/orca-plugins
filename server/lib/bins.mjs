@@ -1,7 +1,7 @@
 // PATH resolution for a process that may have been started from a GUI PATH.
 
 import { execFileSync } from 'node:child_process'
-import { existsSync, readdirSync } from 'node:fs'
+import { existsSync, readdirSync, realpathSync, accessSync, constants, openSync, readSync, closeSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, delimiter } from 'node:path'
 
@@ -50,6 +50,24 @@ export function resolveBin(name, env = process.env) {
   for (const dir of String(env.PATH ?? '').split(delimiter)) {
     const candidate = join(dir, name)
     if (dir && existsSync(candidate)) return candidate
+  }
+  return null
+}
+
+/** Vendor CLI only: never use Orca's LLM-router shims. */
+export function resolveLocalAgent(name,{env=process.env,directories=candidateDirs()}={}) {
+  if(!['claude','codex'].includes(name))return null
+  const explicit=env[`ORCA_SELF_REVIEW_${name.toUpperCase()}_BIN`]
+  const candidates=explicit?[explicit]:[...String(env.PATH??'').split(delimiter),...directories].filter(Boolean).map(dir=>join(dir,name))
+  for(const file of candidates){
+    try{
+      const resolved=realpathSync(file)
+      if(/[\/]\.orca[\/]bin[\/]/.test(file)||/[\/]\.orca[\/]bin[\/]/.test(resolved))continue
+      accessSync(resolved,constants.X_OK)
+      const buffer=Buffer.alloc(4096),fd=openSync(resolved,'r');let size;try{size=readSync(fd,buffer,0,buffer.length,0)}finally{closeSync(fd)};const prefix=buffer.subarray(0,size).toString('utf8')
+      if(prefix.startsWith('#!')&&/llm_router|llm-router/.test(prefix))continue
+      return resolved
+    }catch{/* next installation */}
   }
   return null
 }

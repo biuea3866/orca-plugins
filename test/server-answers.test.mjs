@@ -7,13 +7,13 @@ const comment = (body, author) => ({ id: `cmt_${Math.random().toString(16).slice
 const thread = (id, comments, extra = {}) => ({ id, path: 'a.js', oldPath: null, side: 'new', startLine: 2, endLine: 2, selectedText: 'const b = 3', status: 'open', applicability: 'current', comments, ...extra })
 const readFileLines = () => ['const a = 1', 'const b = 3', 'export { a }']
 
-test('only open, current threads whose last comment is not from the AI are waiting for an answer', () => {
+test('open current and historical threads whose last comment is not from the AI are waiting for an answer', () => {
   const waiting = thread('thr_aaaaaaaaaaaa', [comment('왜 let 이 아니죠?')])
   const answered = thread('thr_bbbbbbbbbbbb', [comment('질문'), comment('답변입니다', 'ai')])
   const followUp = thread('thr_cccccccccccc', [comment('질문'), comment('답변입니다', 'ai'), comment('그럼 이건요?')])
   const resolved = thread('thr_dddddddddddd', [comment('질문')], { status: 'resolved' })
   const outdated = thread('thr_eeeeeeeeeeee', [comment('질문')], { applicability: 'outdated' })
-  assert.deepEqual(selectAnswerableThreads([waiting, answered, followUp, resolved, outdated]).map((entry) => entry.id), ['thr_aaaaaaaaaaaa', 'thr_cccccccccccc'])
+  assert.deepEqual(selectAnswerableThreads([waiting, answered, followUp, resolved, outdated]).map((entry) => entry.id), ['thr_aaaaaaaaaaaa', 'thr_cccccccccccc', 'thr_eeeeeeeeeeee'])
 })
 
 test('the answer prompt is a read-only question prompt that carries the thread, its history and the response code', () => {
@@ -75,3 +75,8 @@ test('newNonce is hard to guess and different every time', () => {
   assert.match(first, /^[0-9a-f]{12,}$/)
   assert.notEqual(first, newNonce())
 })
+
+test('historical question prompt labels selected text as a past snapshot',()=>{
+ const prompt=buildAnswerPrompt({session,threads:[thread('thr_eeeeeeeeeeee',[comment('삭제한 이유?')],{applicability:'outdated'})],readFileLines:()=>[],nonce:'abc123'});
+ assert.match(prompt,/과거 스냅샷/);assert.match(prompt,/삭제한 이유/);
+});

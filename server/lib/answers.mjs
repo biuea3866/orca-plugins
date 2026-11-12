@@ -9,9 +9,9 @@ export function newNonce() {
   return randomBytes(8).toString('hex')
 }
 
-/** Open, up-to-date threads whose latest comment is the reviewer's, i.e. a question nobody answered yet. */
+/** Open threads (including historical anchors) whose latest comment is the reviewer's, i.e. a question nobody answered yet. */
 export function selectAnswerableThreads(threads) {
-  return threads.filter((thread) => thread.status === 'open' && thread.applicability === 'current' && thread.comments.at(-1)?.author !== 'ai')
+  return threads.filter((thread) => thread.status === 'open' && thread.comments.at(-1)?.author !== 'ai' && Boolean(thread.comments.at(-1)?.body?.trim()))
 }
 
 export function buildAnswerPrompt({ session, threads, readFileLines, nonce }) {
@@ -52,6 +52,7 @@ export function buildAnswerPrompt({ session, threads, readFileLines, nonce }) {
       `### 스레드 ${index + 1} — ${thread.id}`,
       `- 파일: ${thread.path}${thread.oldPath ? ` (이전 경로: ${thread.oldPath})` : ''}`,
       `- side: ${thread.side} (${thread.side === 'new' ? '현재/추가된 라인' : '삭제된/이전 라인'}), 라인 ${range}`,
+      `- 코드 위치 상태: ${thread.applicability === 'outdated' ? '이전 코드 (현재 diff에서 변경되거나 삭제됨). 아래 원문은 과거 스냅샷이며 현재 코드라고 단정하지 않는다.' : '현재 diff와 일치'}`,
       '- 선택된 원문:',
       '```',
       thread.selectedText,

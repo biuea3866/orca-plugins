@@ -79,7 +79,7 @@ export class GitReader {
    */
   async workingTreeDiff(cwd, { baseRef, includeUntracked = false, includeWorkingTree = false }) {
     const { headSha, baseSha, mergeBaseSha, noMergeBase } = await this.diffBase(cwd, baseRef)
-    const diffArgs = ['diff', '--no-color', '--no-ext-diff', '--find-renames', mergeBaseSha ?? baseSha]
+    const diffArgs = ['diff', `--unified=${FULL_CONTEXT_LINES}`, '--no-color', '--no-ext-diff', '--find-renames', mergeBaseSha ?? baseSha]
     if (!includeWorkingTree) diffArgs.push('HEAD')
     const diff = await this.run(cwd, [...diffArgs, '--'])
     const files = parseUnifiedDiff(diff.stdout)

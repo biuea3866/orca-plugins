@@ -99,7 +99,7 @@ export class SessionStore {
   findReusable(input) {
     for (const session of this.listSessionsFull()) {
       if (session.status === 'completed') continue
-      if (input.kind === 'local' && session.kind === 'local' && session.repoPath === input.repoPath && session.baseRef === input.baseRef) return session
+      if (input.kind === 'local' && session.kind === 'local' && session.repoPath === input.repoPath && session.baseRef === input.baseRef && session.branch === (input.branch ?? '')) return session
       if (input.kind === 'pr' && session.kind === 'pr' && session.pr && session.pr.owner === input.pr.owner && session.pr.repo === input.pr.repo && session.pr.number === input.pr.number) return session
     }
     return null

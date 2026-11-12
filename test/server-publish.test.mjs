@@ -148,3 +148,8 @@ test('paths are taken literally, so a changed file named like a glob cannot pull
   assert.equal(git(work, 'ls-files', 'b.js'), '', 'b.js was never added')
   assert.equal(git(work, 'rev-parse', 'HEAD'), head, 'nothing was committed')
 })
+
+test('a fix already committed locally is pushed without creating another commit',async()=>{
+ const {remote,work,branch}=makeRepos();dirty(work);git(work,'add','a.js','new.txt');git(work,'commit','--only','-qm','local review','--','a.js','new.txt');const commit=git(work,'rev-parse','HEAD');const {calls,exec}=recording();
+ const result=await publishRun({exec,run:baseRun(work,{committed:{commit,branch}}),session:{repoPath:work,branch}});assert.equal(result.commit,commit);assert.equal(git(remote,'rev-parse',`refs/heads/${branch}`),commit);assert.equal(calls.filter(args=>args.includes('commit')).length,0);assert.equal(git(work,'diff','--cached','--name-only'),'staged.txt');
+});
