@@ -1,62 +1,75 @@
-:root {
-  color-scheme: light dark;
-  --bg: #ffffff;
-  --fg: #333333;
-  --muted: #616161;
-  --surface: #f3f3f3;
-  --surface-2: #e5e5e5;
-  --border: #d4d4d4;
-  --primary: #007acc;
-  --primary-fg: #ffffff;
-  --danger: #cf222e;
-  --danger-fg: #ffffff;
-  --success: #1a7f37;
-  --warning-bg: #fff8c5;
-  --warning-fg: #4d2d00;
-  --add-bg: #dafbe1;
-  --add-num-bg: #aceebb;
-  --del-bg: #ffebe9;
-  --del-num-bg: #ffcecb;
-  --hunk-bg: #ddf4ff;
-  --hunk-fg: #0550ae;
-  --select-bg: #add6ff;
-  --thread-bg: #ffffff;
-  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-  --radius: 3px;
+/* VS Code Dark+/Light+ palette: microsoft/vscode extensions/theme-defaults/themes. */
+:root, :root[data-theme="light"] {
+  color-scheme:light;
+  --bg:#ffffff;
+  --fg:#000000;
+  --muted:#616161;
+  --surface:#f3f3f3;
+  --surface-2:#e8e8e8;
+  --border:#cecece;
+  --primary:#007acc;
+  --primary-fg:#ffffff;
+  --danger:#a1260d;
+  --danger-fg:#ffffff;
+  --success:#008000;
+  --warning-bg:#fff4ce;
+  --warning-fg:#795e26;
+  --add-bg:#e4f0d5;
+  --add-num-bg:#c8e6b0;
+  --del-bg:#f9dddd;
+  --del-num-bg:#f1bdbd;
+  --hunk-bg:#e4eff9;
+  --hunk-fg:#0451a5;
+  --select-bg:#add6ff;
+  --thread-bg:#f3f3f3;
+  --syntax-keyword:#0000ff;
+  --syntax-control:#af00db;
+  --syntax-string:#a31515;
+  --syntax-comment:#008000;
+  --syntax-number:#098658;
+  --syntax-function:#795e26;
+  --syntax-type:#267f99;
+  --syntax-variable:#001080;
+  --syntax-constant:#0070c1;
+  --syntax-property:#001080;
+  --syntax-annotation:#795e26;
 }
 :root[data-theme="dark"] {
-  --bg: #1e1e1e;
-  --fg: #d4d4d4;
-  --muted: #858585;
-  --surface: #252526;
-  --surface-2: #2d2d30;
-  --border: #3c3c3c;
-  --primary: #007acc;
-  --primary-fg: #1e1e1e;
-  --danger: #f85149;
-  --danger-fg: #1e1e1e;
-  --success: #3fb950;
-  --warning-bg: #3a2d00;
-  --warning-fg: #f0d26a;
-  --add-bg: #283d2b;
-  --add-num-bg: #344b35;
-  --del-bg: #4b1818;
-  --del-num-bg: #632b2b;
-  --hunk-bg: #252526;
-  --hunk-fg: #9cdcfe;
-  --select-bg: #264f78;
-  --thread-bg: #252526;
+  color-scheme:dark;
+  --bg:#1e1e1e;
+  --fg:#d4d4d4;
+  --muted:#858585;
+  --surface:#252526;
+  --surface-2:#2d2d30;
+  --border:#3c3c3c;
+  --primary:#007acc;
+  --primary-fg:#ffffff;
+  --danger:#f48771;
+  --danger-fg:#1e1e1e;
+  --success:#89d185;
+  --warning-bg:#352a05;
+  --warning-fg:#cca700;
+  --add-bg:#28352a;
+  --add-num-bg:#37523b;
+  --del-bg:#39252a;
+  --del-num-bg:#5c3037;
+  --hunk-bg:#264f7840;
+  --hunk-fg:#9cdcfe;
+  --select-bg:#264f78;
+  --thread-bg:#252526;
+  --syntax-keyword:#569cd6;
+  --syntax-control:#c586c0;
+  --syntax-string:#ce9178;
+  --syntax-comment:#6a9955;
+  --syntax-number:#b5cea8;
+  --syntax-function:#dcdcaa;
+  --syntax-type:#4ec9b0;
+  --syntax-variable:#9cdcfe;
+  --syntax-constant:#4fc1ff;
+  --syntax-property:#9cdcfe;
+  --syntax-annotation:#dcdcaa;
 }
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg: #1e1e1e; --fg: #d4d4d4; --muted: #858585; --surface: #252526; --surface-2: #2d2d30; --border: #3c3c3c;
-    --primary: #007acc; --primary-fg: #1e1e1e; --danger: #f85149; --danger-fg: #1e1e1e; --success: #3fb950;
-    --warning-bg: #3a2d00; --warning-fg: #f0d26a; --add-bg: #283d2b; --add-num-bg: #344b35; --del-bg: #4b1818; --del-num-bg: #632b2b;
-    --hunk-bg: #252526; --hunk-fg: #9cdcfe; --select-bg: #264f78; --thread-bg: #252526;
-  }
-}
-
+:root { --mono:Menlo, Monaco, Consolas, monospace; --sans:-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; --radius:4px; }
 * { box-sizing: border-box; }
 html, body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 var(--sans); }
 a { color: var(--primary); text-decoration: none; }
@@ -161,28 +174,50 @@ th { color: var(--muted); font-weight: 600; font-size: 12px; }
 .pr-body { white-space: pre-wrap; word-break: break-word; padding: 10px 12px; }
 .kbd { font-family: var(--mono); font-size: 11px; border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; background: var(--surface-2); }
 
+.comment[data-author="ai"] { border-left:3px solid var(--primary); padding-left:10px; }
+
+.session-head { position:sticky; z-index:10; }
+.review-actions-bar { display:flex; flex-wrap:wrap; align-items:center; gap:8px; flex-basis:100%; width:100%; }
+
+:root[data-theme] .diff .code { background:var(--bg); color:var(--fg); font-size:13px; }
+.syntax-keyword { color:var(--syntax-keyword); }
+.syntax-control { color:var(--syntax-control); }
+.syntax-string { color:var(--syntax-string); }
+.syntax-comment { color:var(--syntax-comment); }
+.syntax-number { color:var(--syntax-number); }
+.syntax-function { color:var(--syntax-function); }
+.syntax-type { color:var(--syntax-type); }
+.syntax-variable { color:var(--syntax-variable); }
+.syntax-constant { color:var(--syntax-constant); }
+.syntax-property { color:var(--syntax-property); }
+.syntax-annotation { color:var(--syntax-annotation); }
+
+.active-reviews { margin:12px 16px; }
+#activeReviewStatus { padding:6px 12px; }
+#activeReviewList { list-style:none; margin:0; padding:0 12px; }
+#activeReviewList li { display:flex; flex-wrap:wrap; align-items:center; gap:8px 16px; padding:8px 0; border-top:1px solid var(--border); }
+#activeReviewList a { flex:1; min-width:180px; overflow-wrap:anywhere; }
+#activeReviewList time { color:var(--muted); font-size:12px; }
+
+.comment[data-kind="question"] { border-left-color:var(--warning-fg); background:var(--surface); }
+.comment[data-kind="question"] .meta { color:var(--warning-fg); font-weight:600; }
+
 .answer-check { color: #1a7f37; border-color: #1a7f37; white-space: nowrap; }
+
 [data-theme="dark"] .answer-check { color: #3fb950; border-color: #3fb950; }
 
-/* Give the review controls a complete row within the review panel. */
-.session-head { width:100%; min-width:0; }
 .session-actions { display:flex; flex:0 0 100%; width:100%; min-width:0; flex-wrap:wrap; align-items:center; gap:8px; }
-.session-actions > .btn { flex:0 0 auto; }
-.session-head > .muted { flex-basis:100%; }
 
-/* VS Code editor palette; actions stay available while reading a file. */
+.session-actions > .btn { flex:0 0 auto; }
+
 :root { --topbar-height:49px; --review-actions-height:50px; --syntax-keyword:#0000ff; --syntax-string:#a31515; --syntax-comment:#008000; --syntax-number:#098658; --syntax-type:#267f99; --syntax-function:#795e26; --syntax-variable:#001080; }
-:root[data-theme="dark"] { --primary-fg:#fff; --danger-fg:#fff; --syntax-keyword:#569cd6; --syntax-string:#ce9178; --syntax-comment:#6a9955; --syntax-number:#b5cea8; --syntax-type:#4ec9b0; --syntax-function:#dcdcaa; --syntax-variable:#9cdcfe; }
+
 .review-actions-bar { position:sticky; top:var(--topbar-height); z-index:15; padding:8px 12px; margin-bottom:12px; border:1px solid var(--border); border-radius:var(--radius); background:var(--surface); box-shadow:0 3px 8px #0002; }
-.local-agent-label { border-radius:3px; color:var(--syntax-type); }
+
 .file-list { top:calc(var(--topbar-height) + var(--review-actions-height) + 12px); max-height:calc(100vh - var(--topbar-height) - var(--review-actions-height) - 24px); }
+
 .file-head { top:calc(var(--topbar-height) + var(--review-actions-height)); }
-.syntax-keyword { color:var(--syntax-keyword); }.syntax-string { color:var(--syntax-string); }.syntax-comment { color:var(--syntax-comment); }.syntax-number { color:var(--syntax-number); }.syntax-type,.syntax-annotation { color:var(--syntax-type); }.syntax-function { color:var(--syntax-function); }.syntax-variable { color:var(--syntax-variable); }
+
 html { scroll-padding-top:calc(var(--topbar-height) + var(--review-actions-height) + 16px); }
+
 .file-panel,.thread,.gutter,.thread button { scroll-margin-top:calc(var(--topbar-height) + var(--review-actions-height) + 16px); }
-/* Keep the editor itself in the VS Code theme; diff colors belong to the gutters. */
-.diff { background:var(--bg); font-family:Consolas,"SFMono-Regular",Menlo,monospace; font-size:13px; line-height:22px; tab-size:4; }
-.diff td.code,.diff tr.add td.code,.diff tr.del td.code { background:var(--bg); color:var(--fg); padding:0 12px; }
-.diff tr.add td.code { box-shadow:inset 2px 0 var(--success); }
-.diff tr.del td.code { box-shadow:inset 2px 0 var(--danger); }
-.diff .gutter { background:var(--bg); }

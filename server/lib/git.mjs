@@ -54,6 +54,11 @@ export class GitReader {
     for (const candidate of BASE_CANDIDATES) {
       if (!candidates.includes(candidate) && (await this.refExists(cwd, candidate))) candidates.push(candidate)
     }
+    const branch = await this.currentBranch(cwd)
+    const refs = await this.run(cwd, ['for-each-ref', '--format=%(refname:short)', 'refs/heads', 'refs/remotes/origin'], {allowFailure:true})
+    if (refs.code === 0) for (const ref of refs.stdout.split('\n').filter(Boolean)) {
+      if (ref !== branch && ref !== `origin/${branch}` && ref !== 'origin/HEAD' && !candidates.includes(ref)) candidates.push(ref)
+    }
     return candidates
   }
 

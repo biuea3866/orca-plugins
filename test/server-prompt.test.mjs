@@ -39,3 +39,15 @@ test('buildPrompt throws when the prompt exceeds the size cap', () => {
   const huge = { ...session, threads: [{ ...session.threads[0], comments: [{ id: 'c', body: 'x'.repeat(MAX_PROMPT_BYTES + 1) }] }] }
   assert.throws(() => buildPrompt({ session: huge, threads: huge.threads, readFileLines: () => [] }), /exceeds/)
 })
+
+ test('outdated follow-up warns that the original path and lines are historical',()=>{
+  const thread={...session.threads[3],comments:[{body:'prior request',fixCompletedAt:'done'},{body:'fix replacement'}]}
+  assert.deepEqual(selectRunnableThreads([thread]),[thread])
+  const prompt=buildPrompt({session,threads:[thread],readFileLines:()=>['unrelated current line']})
+  assert.match(prompt,/코드 위치 변경됨/)
+  assert.match(prompt,/현재 구현/)
+  assert.match(prompt,/복원하지/)
+  assert.doesNotMatch(prompt,/unrelated current line/)
+  assert.match(prompt,/수정 완료 · 문맥.*prior request/)
+  assert.match(prompt,/이번 수정 요청.*fix replacement/)
+ })

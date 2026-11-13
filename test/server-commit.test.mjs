@@ -17,3 +17,8 @@ test('failed, answer and invalid paths cannot create a commit; no-change fixes d
 test('an AI collateral edit outside the reviewed file scope blocks automatic commit before staging',async t=>{
  const f=fixture(t);f.run.autoCommit=true;f.run.reviewPaths=['delete'];unlinkSync(join(f.cwd,'delete'));writeFileSync(join(f.cwd,'edit'),'unrequested comment cleanup');f.run.changedFiles=['delete','edit'];f.run.fingerprintsAfter=fingerprintPaths(f.cwd,f.run.changedFiles);const index=f.git('ls-files','--stage');await assert.rejects(invoke(f),/코멘트 대상 외 파일.*edit/);assert.equal(f.git('rev-parse','HEAD'),f.run.headBefore);assert.equal(f.git('ls-files','--stage'),index);
 });
+
+test('automatic commits obey the same detekt/test gate as manual publication',async t=>{
+ const f=fixture(t);writeFileSync(join(f.cwd,'gradlew'),'#!/bin/sh\necho detekt_failed\nexit 6\n',{mode:0o755});writeFileSync(join(f.cwd,'settings.gradle.kts'),'');writeFileSync(join(f.cwd,'build.gradle.kts'),'');writeFileSync(join(f.cwd,'edit'),'AI edit');f.run.changedFiles=['edit'];f.run.fingerprintsAfter=fingerprintPaths(f.cwd,['edit']);const index=f.git('ls-files','--stage');
+ await assert.rejects(invoke(f),e=>e.code==='pre_publish_checks_failed');assert.equal(f.git('rev-parse','HEAD'),f.run.headBefore);assert.equal(f.git('ls-files','--stage'),index)
+})

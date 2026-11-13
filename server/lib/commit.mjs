@@ -1,10 +1,12 @@
 // Local commits are performed by the server, never by the editing agent.
+import {runPublishChecks} from './pre-publish-checks.mjs'
+import {defaultCommitMessage} from './commit-message.mjs'
 import {existsSync} from 'node:fs'
 import {isAbsolute,resolve} from 'node:path'
 import {ApiError} from './store.mjs'
 import {fingerprintPaths} from './runs.mjs'
 
-export async function commitFixRun({exec,gitBinary='git',run,session}){
+export async function commitFixRun({exec,gitBinary='git',run,session,checksOptions}){
  const refuse=message=>{throw new ApiError(400,'commit_refused',message)}
  if(run.mode!=='fix'||run.status!=='succeeded')refuse('Only a successful AI fix can be committed.')
  if(!run.cwd||run.cwd!==session.repoPath)refuse('The review worktree changed.')
@@ -23,9 +25,12 @@ export async function commitFixRun({exec,gitBinary='git',run,session}){
   if(Object.hasOwn(run.fingerprintsBefore??{},path))refuse(`AI edited a file that already had local changes: ${path}. Commit it separately after review.`)
   if(!Object.hasOwn(run.fingerprintsAfter??{},path)||current[path]!==run.fingerprintsAfter[path])refuse(`The file changed after the AI fix: ${path}. Review it before committing.`)
  }
+ const checks=await runPublishChecks({exec,cwd:run.cwd,paths,...checksOptions})
+ if(await git(['rev-parse','HEAD'])!==head || await git(['symbolic-ref','--quiet','--short','HEAD'])!==branch)refuse('HEAD or the branch changed during validation.')
+ const afterChecks=fingerprintPaths(run.cwd,paths)
+ for(const path of paths)if(afterChecks[path]!==current[path])refuse(`The file changed during validation: ${path}. Review it before committing.`)
  // --only keeps unrelated staged entries out of the commit and preserves them.
  await git(['--literal-pathspecs','add','-A','--',...paths])
- const ticket=branch.match(/(?:GRT|BE|LIVEISSUE)-[0-9]+/i)?.[0]?.toUpperCase()??'NO-JIRA'
- await git(['--literal-pathspecs','commit','--only','-m',`[${ticket}] - fix: 리뷰 코멘트 반영`,'-m',`Local Self Review ${run.id} (${run.agent})`,'--',...paths])
- const commit=await git(['rev-parse','HEAD']);return {commit,branch,paths}
+ await git(['--literal-pathspecs','commit','--only','-m',defaultCommitMessage(branch,paths,run.commitMessage),'-m',`Local Self Review ${run.id} (${run.agent})`,'--',...paths])
+ const commit=await git(['rev-parse','HEAD']);return {commit,branch,paths,checks}
 }

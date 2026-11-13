@@ -1,6 +1,7 @@
 // AI run management: spawn claude/codex headless in the session worktree,
 // persist AIRun metadata, cap logs, cancel via process group.
 
+import {StringDecoder} from 'node:string_decoder'
 import { spawn } from 'node:child_process'
 import { createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, statSync, openSync, readSync, closeSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
@@ -9,6 +10,14 @@ import { ApiError, makeId, writeJsonAtomic } from './store.mjs'
 
 export const LOG_CAP_BYTES = 10 * 1024 * 1024
 const TERMINAL_STATES = new Set(['succeeded', 'failed', 'cancelled', 'interrupted'])
+
+// Headless CLI runs must use the saved local login, not credentials inherited from the host app.
+export function localCliEnvironment(parent, overrides = {}) {
+  const env = { ...parent, ...overrides }
+  for (const name of ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'OPENAI_API_KEY', 'CODEX_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_API_BASE', 'CLAUDECODE', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY']) delete env[name]
+  env.LLM_ROUTER_BYPASS = '1'
+  return env
+}
 
 export function defaultAgentCommands(resolveBin) {
   return {
@@ -21,7 +30,7 @@ export function defaultAgentCommands(resolveBin) {
     },
     codex: {
       command: resolveBin('codex'),localCLI:true,
-      args: (cwd) => ['exec', '--full-auto', '--skip-git-repo-check', '-C', cwd, '-'],
+      args: (cwd) => ['exec', '--sandbox', 'workspace-write', '--skip-git-repo-check', '-C', cwd, '-'],
       answerArgs: (cwd) => ['exec', '--sandbox', 'read-only', '--skip-git-repo-check', '-C', cwd, '-'],
       env: {}
     }
@@ -64,13 +73,14 @@ export function pickRunToShow(runs) {
 }
 
 export class RunManager {
-  constructor({ homeDir, agentCommands, git, now = () => new Date().toISOString(), onFinished = () => {}, ignoreChangedPaths = [] }) {
+  constructor({ homeDir, agentCommands, git, now = () => new Date().toISOString(), onFinished = () => {}, onOutput = () => {}, ignoreChangedPaths = [] }) {
     this.ignoreChangedPaths = ignoreChangedPaths
     this.runsDir = join(homeDir, 'runs')
     this.agentCommands = agentCommands
     this.git = git
     this.now = now
     this.onFinished = onFinished
+    this.onOutput = onOutput
     this.children = new Map()
     mkdirSync(this.runsDir, { recursive: true, mode: 0o700 })
     this.recover()
@@ -180,27 +190,31 @@ export class RunManager {
 
     const logPath = join(this.runDir(run.id), 'output.log')
     const logStream = createWriteStream(logPath, { flags: 'a', mode: 0o600 })
-    let written = 0
+    let written = 0, questionWindow = ''
+    const decoder = new StringDecoder('utf8')
     const append = (chunk) => {
       if (written >= LOG_CAP_BYTES) return
       const slice = chunk.length + written > LOG_CAP_BYTES ? chunk.subarray(0, LOG_CAP_BYTES - written) : chunk
       written += slice.length
       logStream.write(slice)
+      if (mode === 'fix') {
+        questionWindow += decoder.write(slice)
+        try { this.onOutput(run, questionWindow) } catch { logStream.write('\nAI 질문 코멘트를 저장하지 못했습니다. 실행 로그를 확인하세요.\n') }
+        questionWindow = questionWindow.slice(-20000)
+      }
     }
 
 
     const launch=async(attempt)=>{
     const spec=this.agentCommands[attempt],argSource=mode==='answer'?spec.answerArgs:spec.args,args=typeof argSource==='function'?argSource(session.repoPath):argSource
     run.agent=attempt;run.status='running';run.endedAt=null;run.exitCode=null
-    const childEnv={...process.env,...(spec.env??{})}
-    if(spec.localCLI){if(childEnv.ANTHROPIC_BASE_URL){delete childEnv.ANTHROPIC_AUTH_TOKEN;delete childEnv.ANTHROPIC_API_KEY}if(childEnv.OPENAI_BASE_URL||childEnv.OPENAI_API_BASE)delete childEnv.OPENAI_API_KEY;for(const key of ['ANTHROPIC_BASE_URL','OPENAI_BASE_URL','OPENAI_API_BASE','CLAUDECODE'])delete childEnv[key]}
     let child
     try {
       child = spawn(spec.command, args, {
         cwd: session.repoPath,
         detached: true,
         stdio: ['pipe', 'pipe', 'pipe'],
-        env: childEnv
+        env: localCliEnvironment(process.env, spec.env)
       })
     } catch (error) {
       run.status = 'failed'

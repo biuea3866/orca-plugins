@@ -146,3 +146,24 @@ test('bridge ops create a session, add a thread, keep view state without regener
   const bad = await api('POST', '/api/bridge', { op: 'nope' })
   assert.equal(bad.status, 400)
 })
+
+test('public panel worker bridge reads live inventory and refreshes data after a session is opened', async () => {
+  const { registerPanelRequests } = await import('../worker/panel-requests.mjs')
+  const handlers = new Map()
+  registerPanelRequests({ panels: { handle: (name, handler) => handlers.set(name, handler) } }, {
+    ensureRuntime: async () => ({ port: server.port, token: server.token }),
+    sendOp: async (_runtime, op) => {
+      const response = await api('POST', '/api/bridge', op)
+      assert.equal(response.status, 200)
+      return response.body.result
+    }
+  })
+  const before = await handlers.get('review.snapshot')()
+  assert.equal(before.worktrees[0].path, repo)
+  await handlers.get('review.op')({ op: 'session.open', worktreePath: repo })
+  const after = await handlers.get('review.snapshot')()
+  const sessionId = after.worktrees[0].sessionId
+  assert.ok(sessionId)
+  assert.equal(after.sessions[sessionId].session.repoPath, repo)
+  assert.equal(JSON.stringify(after).includes(server.token), false, 'server credentials stay in the worker')
+})

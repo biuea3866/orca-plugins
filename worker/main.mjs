@@ -4,6 +4,7 @@
 // document), make sure a bridge terminal exists for the current worktree, and
 // install the terminal launcher.
 
+import { registerPanelRequests } from './panel-requests.mjs'
 import { join } from 'node:path'
 import {
   buildOpenUrl,
@@ -37,6 +38,11 @@ export default async function activate(context) {
   const homeDir = defaultHomeDir()
   const canNotify = context.grantedCapabilities?.includes('notifications:show')
   let launcherPath = join(homeDir, 'bin', 'open-review')
+
+  registerPanelRequests(context, {
+    ensureRuntime: () => ensureServer({ homeDir, serverEntry, env: { ...process.env, ORCA_SELF_REVIEW_PANEL_ROOT: join(homeDir, 'panel') } }),
+    sendOp: bridgeOp
+  })
 
   async function notify(title, body) {
     if (!canNotify) return

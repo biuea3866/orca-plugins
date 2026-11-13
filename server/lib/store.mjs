@@ -231,13 +231,16 @@ export class SessionStore {
     const session = this.getSession(sessionId)
     const added = []
     const skipped = []
-    for (const { threadId, body, agent, runId } of entries) {
+    for (const { threadId, body, agent, runId, kind, replyToCommentId, requestBody, requestUpdatedAt } of entries) {
       const thread = session.threads.find((candidate) => candidate.id === threadId)
       if (!thread) { skipped.push(threadId); continue }
+      if (kind === 'fix-result' && (!thread.comments.some(comment => comment.id === replyToCommentId && comment.author !== 'ai') || thread.comments.some(comment => comment.kind === 'fix-result' && comment.runId === runId && comment.replyToCommentId === replyToCommentId))) continue
       const text = typeof body === 'string' ? body.trim() : ''
       if (!text) continue
+      const storedText = text.length > MAX_COMMENT_LENGTH ? `${text.slice(0, MAX_COMMENT_LENGTH - 1)}…` : text
+      if (kind === 'question' && thread.comments.some(comment => comment.kind === 'question' && comment.runId === runId && comment.body === storedText)) continue
       const timestamp = this.now()
-      thread.comments.push({ id: makeId('cmt'), body: text.length > MAX_COMMENT_LENGTH ? `${text.slice(0, MAX_COMMENT_LENGTH - 1)}…` : text, author: 'ai', agent, runId, createdAt: timestamp, updatedAt: timestamp })
+      thread.comments.push({ id: makeId('cmt'), body: storedText, author: 'ai', agent, runId, ...(kind === 'question' ? {kind} : kind === 'fix-result' ? {kind,replyToCommentId,requestBody,requestUpdatedAt} : {}), createdAt: timestamp, updatedAt: timestamp })
       added.push(threadId)
     }
     if (added.length > 0) this.save(session)
@@ -250,11 +253,26 @@ export class SessionStore {
     return comment
   }
 
+  markFixCompleted(sessionId, requests, runId) {
+    const session = this.getSession(sessionId)
+    let changed = false
+    for (const request of requests) {
+      const comment = session.threads.find(thread => thread.id === request.threadId)?.comments.find(comment => comment.id === request.commentId)
+      if (!comment || comment.author === 'ai' || comment.body !== request.body || comment.updatedAt !== request.updatedAt || comment.fixCompletedAt) continue
+      comment.fixCompletedAt = this.now()
+      comment.fixRunId = runId
+      changed = true
+    }
+    return changed ? this.save(session) : session
+  }
+
   updateComment(sessionId, threadId, commentId, input) {
     const session = this.withRevision(sessionId, input.revision)
     const comment = this.findComment(this.findThread(session, threadId), commentId)
     comment.body = requireString(input.body, 'body', { max: MAX_COMMENT_LENGTH })
     comment.updatedAt = this.now()
+    delete comment.fixCompletedAt
+    delete comment.fixRunId
     return this.save(session)
   }
 

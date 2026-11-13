@@ -4,6 +4,48 @@
 <meta charset="utf-8">
 <title>Self Review</title>
 <style>
+  :root {
+    --background: var(--orca-background, #1e1e1e);
+    --foreground: var(--orca-foreground, #e6e6e6);
+    --card: var(--orca-card, #252526);
+    --card-foreground: var(--orca-card-foreground, #e6e6e6);
+    --popover: var(--orca-popover, #252526);
+    --popover-foreground: var(--orca-popover-foreground, #e6e6e6);
+    --primary: var(--orca-primary, #9ecbff);
+    --primary-foreground: var(--orca-primary-foreground, #162c46);
+    --secondary: var(--orca-secondary, #333337);
+    --secondary-foreground: var(--orca-secondary-foreground, #e6e6e6);
+    --muted-foreground: var(--orca-muted-foreground, #b0b0b8);
+    --accent: var(--orca-accent, #36363c);
+    --accent-foreground: var(--orca-accent-foreground, #ffffff);
+    --destructive: var(--orca-destructive, #b93838);
+    --destructive-foreground: var(--orca-destructive-foreground, #ffffff);
+    --border: var(--orca-border, #48484e);
+    --input: var(--orca-input, #606068);
+    --ring: var(--orca-ring, #9ecbff);
+    --radius: var(--orca-radius, 6px);
+  }
+  :root.light {
+    --background: var(--orca-background, #ffffff);
+    --foreground: var(--orca-foreground, #202124);
+    --card: var(--orca-card, #f6f7f8);
+    --card-foreground: var(--orca-card-foreground, #202124);
+    --popover: var(--orca-popover, #ffffff);
+    --popover-foreground: var(--orca-popover-foreground, #202124);
+    --primary: var(--orca-primary, #245fbb);
+    --primary-foreground: var(--orca-primary-foreground, #ffffff);
+    --secondary: var(--orca-secondary, #e9ebef);
+    --secondary-foreground: var(--orca-secondary-foreground, #202124);
+    --muted-foreground: var(--orca-muted-foreground, #595f6b);
+    --accent: var(--orca-accent, #e5ebf4);
+    --accent-foreground: var(--orca-accent-foreground, #202124);
+    --destructive: var(--orca-destructive, #b42323);
+    --destructive-foreground: var(--orca-destructive-foreground, #ffffff);
+    --border: var(--orca-border, #c8cdd5);
+    --input: var(--orca-input, #929aa7);
+    --ring: var(--orca-ring, #245fbb);
+    --radius: var(--orca-radius, 6px);
+  }
   :root { color-scheme: light dark; --sr-add: rgba(46, 160, 67, .18); --sr-del: rgba(248, 81, 73, .18); --sr-sel: rgba(255, 204, 0, .28); --sr-hunk: rgba(56, 139, 253, .12); }
   html, body { margin: 0; padding: 0; background: var(--background); color: var(--foreground); }
   body { font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
@@ -152,8 +194,18 @@ function placeThreads(threads) {
   return placement
 }
 
+function isFixRunnable(thread) {
+  if (thread.status !== 'open') return false
+  const pending = comment => comment.author !== 'ai' && !comment.fixCompletedAt
+  if (thread.applicability === 'current') return thread.comments.some(pending)
+  // A fresh follow-up after a completed request applies to the current implementation,
+  // even when the previous fix moved or removed the original anchor.
+  return thread.applicability === 'outdated' && thread.comments.some((comment, index) =>
+    pending(comment) && thread.comments.slice(0, index).some(previous => previous.author !== 'ai' && previous.fixCompletedAt))
+}
+
 function countRunnable(threads) {
-  return threads.filter((thread) => thread.status === 'open' && thread.applicability === 'current').length
+  return threads.filter(isFixRunnable).length
 }
 
 function countByFile(threads) {
@@ -169,13 +221,30 @@ function answeredCommentIds(comments = []) {
   for (const comment of comments) {
     if (comment.pending) continue
     if (comment.author !== 'ai') question = comment.id ?? null
-    else if (question && String(comment.body ?? '').trim()) answered.add(question)
+    else if (question && comment.kind!=='fix-result' && comment.kind!=='question' && String(comment.body ?? '').trim()) answered.add(question)
   }
   return answered
 }
 
-function countAnswerable(threads) {
-  return threads.filter(thread => thread.status === 'open' && thread.comments.at(-1)?.author !== 'ai' && Boolean(thread.comments.at(-1)?.body?.trim())).length
+function countAnswerable(threads) { return threads.filter(isAnswerableThread).length }
+
+function isAnswerableThread(thread) {
+ const last=thread.comments.filter(comment=>comment.kind!=='fix-result').at(-1)
+ return thread.status==='open' && last && last.author!=='ai' && !last.fixCompletedAt && Boolean(last.body?.trim())
+}
+function countAwaitingAnswers(threads) { return threads.filter(isAnswerableThread).length }
+function isCommentAnswered(comments,index) {return comments[index]?.author!=='ai' && answeredCommentIds(comments).has(comments[index]?.id)}
+
+function isAiQuestionAnswered(comments,index) {
+ return comments[index]?.kind === 'question' && comments.slice(index+1).some(comment=>comment.author !== 'ai')
+}
+
+// Keep data chronological for prompts; only the visual order groups result replies under requests.
+function commentsForDisplay(comments) {
+  const parents = new Set(comments.filter(comment => comment.author !== 'ai').map(comment => comment.id))
+  const replies = comments.filter(comment => comment.kind === 'fix-result' && parents.has(comment.replyToCommentId))
+  const attached = new Set(replies)
+  return comments.filter(comment => !attached.has(comment)).flatMap(comment => [comment, ...replies.filter(reply => reply.replyToCommentId === comment.id)])
 }
 
 // Two-step "click again to confirm" for the panel.
@@ -235,7 +304,7 @@ function restorePinned(pinnedPath, worktrees) {
 // ------------------------------------------------------------------ data
 const TEMPLATE_VERSION = 'v27'
 let DATA = JSON.parse(document.getElementById('orca-panel-data').textContent || '{}')
-const PREVIEW = window.parent === window                       // opened in a normal browser (server /panel-preview)
+const PREVIEW = !window.orca && window.parent === window       // isolated Orca guests also have parent === window
 const PREVIEW_TOKEN = document.querySelector('meta[name="sr-token"]')?.content ?? null
 let CONTEXT = null                                             // { displayName, branch, terminals: [{id}] }
 let ROUTE = 'review'                                            // 'review' | 'overview'
@@ -252,9 +321,26 @@ function formatWhen(iso) { if (!iso) return '—'; const d = new Date(iso); if (
 function notice(message, isError) { const el = document.getElementById('notice'); el.textContent = message; el.className = 'notice' + (isError ? ' error' : ''); el.hidden = !message; UI.lastMessage = message }
 
 // ------------------------------------------------------------------ host bridge (panel actions)
+// Public frame API. Older hosts keep using the terminal bridge in the panel.
+function createPanelHost(orca) {
+  if (!orca?.host?.has?.('plugin.request') && typeof orca?.host?.has === 'function') return null
+  if (typeof orca?.host?.call !== 'function') return null
+  const request = async (name, input) => {
+    const result = await orca.host.call('plugin.request', { name, ...(input === undefined ? {} : { input }) })
+    return result.output
+  }
+  return {
+    call: (method, params) => orca.host.call(method, params),
+    snapshot: () => request('review.snapshot'),
+    send: (op) => request('review.op', op)
+  }
+}
+
+const PANEL_HOST = PREVIEW ? null : createPanelHost(window.orca)
 const pending = {}
 let counter = 0
 function hostCall(action, params) {
+  if (PANEL_HOST) return PANEL_HOST.call(action, params)
   if (PREVIEW) {
     if (action === 'workspace.readContext') { const w = DATA.worktrees[0]; return Promise.resolve(w ? { displayName: w.displayName, branch: w.branch, terminals: (w.bridgeTerminalIds || []).map((id) => ({ id })) } : null) }
     if (action === 'notifications.show') { console.log('notify', params); return Promise.resolve({ delivered: true }) }
@@ -308,6 +394,11 @@ function bridgeTerminalId() {
   return null
 }
 async function send(op, { silent = false } = {}) {
+  if (PANEL_HOST) {
+    const result = await PANEL_HOST.send(op)
+    await refreshPanelData()
+    return result
+  }
   if (PREVIEW && PREVIEW_TOKEN) {
     const response = await fetch('/api/bridge', { method: 'POST', headers: { 'X-SR-Token': PREVIEW_TOKEN, 'Content-Type': 'application/json' }, body: JSON.stringify(op) })
     const payload = await response.json().catch(() => null)
@@ -754,7 +845,7 @@ function notifyRunTransitions() {
   }
 }
 function bridgeStatusHtml() {
-  if (PREVIEW) return ''
+  if (PREVIEW || PANEL_HOST) return ''
   const terminalId = bridgeTerminalId()
   if (terminalId) return ''
   const terminals = CONTEXT?.terminals || []
@@ -784,7 +875,7 @@ function fileDomId(path) { return 'file-' + String(path).replace(/[^a-zA-Z0-9_-]
 
 // Threads where the reviewer's comment is the latest word: open, up to date, and not already answered by the AI.
 function awaitingCount(session) {
-  return session.threads.filter((thread) => thread.status === 'open' && thread.applicability === 'current' && thread.comments[thread.comments.length - 1]?.author !== 'ai').length
+  return countAwaitingAnswers(session.threads)
 }
 
 // "전체 보기": the whole file as context instead of a few lines around each change. Only for local sessions and
@@ -797,7 +888,7 @@ function fullToggleHtml(session, file) {
 
 function fileBlockHtml(session, file) {
   const { session: s } = session
-  const canComment = Boolean(PREVIEW || bridgeTerminalId())
+  const canComment = Boolean(PREVIEW || PANEL_HOST || bridgeTerminalId())
   const threads = [...s.threads.filter((t) => t.path === file.path), ...UI.pendingThreads.filter((t) => t.path === file.path)]
   const placement = placeThreads(threads)
   const collapsed = UI.collapsedFiles.has(file.path)
@@ -889,7 +980,7 @@ function threadHtml(thread) {
   }
   return h`<div class="thread ${thread.status === 'resolved' ? 'resolved' : ''} ${expanded ? 'expanded' : ''}" data-thread="${thread.id}">
     <div class="thread-head"><span class="badge">${thread.status === 'open' ? '열림' : '해결'}</span>${thread.applicability === 'outdated' ? raw('<span class="badge warn" title="현재 diff에서 원문을 찾지 못함">outdated</span>') : ''}${handledByAi ? raw('<span class="badge" title="마지막 AI 실행의 대상 스레드 — 결과는 실행 카드의 \'AI 가 바꾼 내용\' 참고">AI 실행 포함</span>') : ''}<span class="mono">${thread.side} ${range}</span><span class="grow"></span>${thread.status === 'resolved' ? raw(h`<button type="button" class="btn ghost small" data-toggle="${thread.id}">${expanded ? '접기' : '펼치기'}</button>`) : ''}<button type="button" class="btn small" ${raw(busy)} data-thread-status="${thread.status === 'open' ? 'resolved' : 'open'}" data-thread="${thread.id}">${thread.status === 'open' ? '해결' : '다시 열기'}</button><button type="button" class="btn small danger" ${raw(busy)} data-thread-delete="${thread.id}">삭제</button></div>
-    <div class="thread-body">${raw(thread.comments.map((c) => h`<div class="comment${c.author === 'ai' ? ' ai' : ''}" data-comment="${c.id}"><div class="meta"><span>${c.author === 'ai' ? 'AI · ' + (c.agent || '') : '나'}</span><span>${formatTime(c.createdAt)}</span><span class="grow"></span>${c.author === 'ai' ? '' : raw(h`<button type="button" class="btn ghost small" ${raw(busy)} data-comment-edit="${c.id}" data-thread="${thread.id}">수정</button>`)}<button type="button" class="btn ghost small" ${raw(busy)} data-comment-delete="${c.id}" data-thread="${thread.id}">삭제</button></div><div class="body">${c.body}</div></div>`).join(''))}
+    <div class="thread-body">${raw(commentsForDisplay(thread.comments).map((c) => h`<div class="comment${c.author === 'ai' ? ' ai' : ''}" data-comment="${c.id}"><div class="meta"><span>${c.author === 'ai' ? (c.kind === 'question' ? 'AI 질문 · 답변 필요 · ' : c.kind === 'fix-result' ? 'AI 수정 결과 · 로컬 · ' : 'AI · ') + (c.agent || '') : '나'}</span>${c.fixCompletedAt ? raw('<span class="badge" title="로컬 수정 보고이며 커밋·푸시 완료를 뜻하지 않습니다">로컬 수정 보고</span>') : ''}<span>${formatTime(c.createdAt)}</span><span class="grow"></span>${c.author === 'ai' ? '' : raw(h`<button type="button" class="btn ghost small" ${raw(busy)} data-comment-edit="${c.id}" data-thread="${thread.id}">수정</button>`)}<button type="button" class="btn ghost small" ${raw(busy)} data-comment-delete="${c.id}" data-thread="${thread.id}">삭제</button></div><div class="body">${c.body}</div></div>`).join(''))}
       ${raw(pendingReplies.map((body) => h`<div class="comment pending"><div class="meta"><span>나</span><span class="badge warn">전송 중…</span></div><div class="body">${body}</div></div>`).join(''))}
       <div class="form"><textarea rows="2" placeholder="답글…" data-reply-text="${thread.id}"></textarea><div class="actions"><button type="button" class="btn primary small" ${raw(busy)} data-reply="${thread.id}">답글</button></div></div></div></div>`
 }
@@ -1027,7 +1118,7 @@ let viewTimer = null
 // Remember (or forget) the hand-picked worktree on the server so it survives the iframe being remounted.
 // Best effort: without a bridge terminal there is nowhere to send it, and that must not pop the bridge picker.
 function sendPin(worktreePath) {
-  if (!PREVIEW && !bridgeTerminalId()) return
+  if (!PREVIEW && !PANEL_HOST && !bridgeTerminalId()) return
   send({ op: 'worktree.pin', worktreePath }, { silent: true }).catch(() => {})
 }
 function sendView(sessionId) {
@@ -1041,14 +1132,37 @@ document.getElementById('btnRefreshOverview').addEventListener('click', () => ac
 document.getElementById('btnWide').addEventListener('click', () => { const s = activeSession(); if (s) act(() => send({ op: 'wide', sessionId: s.session.id })); else notice('세션을 먼저 시작하세요.', true) })
 
 // ------------------------------------------------------------------ boot
-loadContext().then(() => {
+let refreshingPanel = null
+async function refreshPanelData() {
+  if (!PANEL_HOST) return
+  if (refreshingPanel) return refreshingPanel
+  refreshingPanel = (async () => {
+    const data = await PANEL_HOST.snapshot()
+    if (data.generatedAt && data.generatedAt === DATA.generatedAt) return
+    DATA = data
+    UI.pendingThreads = []; UI.pendingReplies = {}
+    pickWorktree({ allowAutoSwitch: false })
+    notifyRunTransitions()
+    scheduleRender({ keepScroll: true })
+  })()
+  try { await refreshingPanel } finally { refreshingPanel = null }
+}
+async function boot() {
+  if (PANEL_HOST) {
+    notice('Self Review 서버에 연결 중…')
+    try { await refreshPanelData(); notice('') }
+    catch (error) { notice('Self Review 서버에 연결하지 못했습니다: ' + error.message, true); return }
+  }
+  await loadContext()
   for (const [sessionId, run] of Object.entries(DATA.runs || {})) UI.lastRunStatus[sessionId] = run.status
   const s = activeSession()
   const viewState = s ? DATA.viewState?.[s.session.id] : null
   if (viewState?.route) ROUTE = viewState.route
   if (!ACTIVE_WORKTREE && (DATA.worktrees || []).length === 0) ROUTE = 'overview'
   render()
-})
+}
+boot().catch((error) => notice(error.message, true))
+if (PANEL_HOST) setInterval(() => refreshPanelData().catch((error) => notice(error.message, true)), 5000)
 // Re-read the host context on focus, but only re-render when the focused worktree really changed:
 // a full re-render in the middle of a click swallows that click (the target node is replaced).
 window.addEventListener('focus', () => {

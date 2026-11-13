@@ -14,11 +14,17 @@ import { discoverSiblingClones } from './lib/clones.mjs'
 import { applyFullFiles } from './lib/full-file.mjs'
 import { buildAnswerPrompt, selectAnswerableThreads, parseAnswers, newNonce } from './lib/answers.mjs'
 import {commitFixRun} from './lib/commit.mjs'
+import {parseFixQuestions} from './lib/fix-questions.mjs'
+import {publicationState} from './lib/publication-state.mjs'
 import { publishRun } from './lib/publish.mjs'
 import { snapshotThreads, historyForSession, runBelongsToSession, summarizeRun, capChanges, buildExchanges, SNAPSHOT_MAX_BYTES, DETAIL_PANEL_MAX_BYTES, SUMMARY_MAX_CHARS, EMBEDDED_DIFF_RUNS, EMBEDDED_DIFF_MAX_BYTES, EMBEDDED_FILE_MAX_BYTES } from './lib/run-history.mjs'
 import { RunManager, defaultAgentCommands, pickRunToShow, filterIgnoredChanges } from './lib/runs.mjs'
 import { annotateThreads } from './lib/anchor.mjs'
-import { buildPrompt, selectRunnableThreads } from './lib/prompt.mjs'
+import {planPublishChecks} from './lib/pre-publish-checks.mjs'
+import {previewWorkingTree,publishWorkingTree} from './lib/working-tree-publish.mjs'
+import {defaultCommitMessage} from './lib/commit-message.mjs'
+import {fixResultEntries} from './lib/fix-results.mjs'
+import { buildPrompt, completedFixThreads, selectRunnableThreads } from './lib/prompt.mjs'
 import { parseUnifiedDiff } from './lib/diff-parser.mjs'
 import { execCommand } from './lib/exec.mjs'
 import { enrichPath, resolveBin, resolveLocalAgent } from './lib/bins.mjs'
@@ -90,12 +96,23 @@ export function createServer({
     agentCommands: agentCommands ?? defaultAgentCommands((name) => resolveLocalAgent(name)),
     git,
     now,
+    onOutput: (run,text) => applyFixQuestions(run,text),
     onFinished: async (run) => {
+      if (run.mode !== 'answer') applyFixQuestions(run,runs.readLog(run.id,0).log)
+      if (run.mode !== 'answer') applyFixResults(run)
       if (run.mode === 'answer') applyAnswers(run)
-      else { try { store.setStatus(run.sessionId, 'rechecking') } catch { /* session gone */ } }
+      else {
+        try {
+          if (run.status === 'succeeded') {
+            const completed = completedFixThreads(runs.readLog(run.id, 0).log, run.threadIds)
+            store.markFixCompleted(run.sessionId, (run.requestedComments || []).filter(request => completed.includes(request.threadId) && !(runs.get(run.id).questionThreadIds || []).includes(request.threadId)), run.id)
+          }
+          store.setStatus(run.sessionId, 'rechecking')
+        } catch { /* session gone */ }
+      }
       publishPanel('run-finished')
       // The diff snapshot comes after the status flip and the first refresh: the card must not wait for git.
-      if (run.mode !== 'answer') { await recordFixOutcome(run);if(run.autoCommit&&run.status==='succeeded'){try{const result=await commitFixRun({exec,gitBinary:resolveBin('git')??'git',run:runs.get(run.id),session:store.getSession(run.sessionId)});const latest=runs.get(run.id);latest.committed=result;runs.save(latest)}catch(error){const latest=runs.get(run.id);latest.commitError={code:error.code,message:error.message};runs.save(latest)}} publishPanel('run-history') }
+      if (run.mode !== 'answer') { await recordFixOutcome(run);if(run.autoCommit&&run.status==='succeeded'){try{const result=await commitFixRun({exec,gitBinary:resolveBin('git')??'git',run:runs.get(run.id),session:store.getSession(run.sessionId),checksOptions:publishChecksOptions(store.getSession(run.sessionId))});const latest=runs.get(run.id);latest.committed=result;runs.save(latest)}catch(error){const latest=runs.get(run.id);latest.commitError={code:error.code,message:error.message};runs.save(latest)}} publishPanel('run-history') }
     },
     ignoreChangedPaths: [join(panelRoot, 'panel.html')]
   })
@@ -149,12 +166,15 @@ export function createServer({
     const repoPath = await git.repoRoot(path)
     const branch = await git.currentBranch(repoPath)
     const baseCandidates = await git.baseCandidates(repoPath)
+    const remembered = store.listSessions().find(session=>session.kind==='local' && session.repoPath===repoPath && session.branch===branch)
+    const defaultBase = remembered && await git.refExists(repoPath,remembered.baseRef) ? remembered.baseRef : baseCandidates[0] ?? null
+    if(defaultBase && !baseCandidates.includes(defaultBase))baseCandidates.unshift(defaultBase)
     const { worktree, repo } = await findWorktree(repoPath)
     return {
       repoPath,
       branch,
       baseCandidates,
-      defaultBase: baseCandidates[0] ?? null,
+      defaultBase,
       worktreeId: worktree?.id ?? null,
       repoDisplayName: repo?.displayName ?? worktree?.displayName ?? repoPath.split(sep).pop()
     }
@@ -243,15 +263,25 @@ export function createServer({
    * The outcome is kept on the run so the panel can show the pushed commit, or why it failed and what to do.
    */
   const publishing = new Set()
+  function publishChecksOptions(session){
+    return {logDir:join(homeDir,'publication-checks',session.id),onUpdate:state=>{
+      const current=store.getSession(session.id)
+      current.publishChecks=structuredClone(state)
+      store.save(current)
+      publishPanel('pre-publish-checks')
+    }}
+  }
   async function publishFixRun(runId) {
     const run = runs.get(runId)
-    if (publishing.has(runId)) throw new ApiError(409, 'publish_in_progress', 'this run is already being committed and pushed')
-    publishing.add(runId)
+    const publishKey = 'repo:' + run.cwd
+    if (runs.runningFor(run.cwd)) throw new ApiError(409,'run_in_progress','AI 수정 실행이 끝난 뒤 게시하세요.')
+    if (publishing.has(publishKey)) throw new ApiError(409, 'publish_in_progress', 'this run is already being committed and pushed')
+    publishing.add(publishKey)
     try {
       const session = store.getSession(run.sessionId)
-      const result = await publishRun({ exec, gitBinary: resolveBin('git') ?? 'git', run, session })
+      const result = await publishRun({ exec, gitBinary: resolveBin('git') ?? 'git', run, session, checksOptions:publishChecksOptions(session) })
       const latest = runs.get(runId)
-      latest.published = { commit: result.commit, branch: result.branch, remote: result.remote, at: now() }
+      latest.published = { commit: result.commit, branch: result.branch, remote: result.remote, remoteHead:result.remoteHead, verifiedAt:now(), at: now() }
       delete latest.publishError
       runs.save(latest)
       return result
@@ -263,9 +293,27 @@ export function createServer({
       }
       throw error
     } finally {
-      publishing.delete(runId)
+      publishing.delete(publishKey)
       publishPanel('publish')
     }
+  }
+
+  async function publishSessionChanges(sessionId,selection) {
+    const session=store.getSession(sessionId),key='repo:'+session.repoPath
+    if(runs.runningFor(session.repoPath))throw new ApiError(409,'run_in_progress','AI 실행이 끝난 뒤 게시하세요.')
+    if(publishing.has(key))throw new ApiError(409,'publish_in_progress','이 작업 트리를 게시 중입니다.')
+    publishing.add(key)
+    try {
+      const result=await publishWorkingTree({exec,gitBinary:resolveBin('git')??'git',session,selection,checksOptions:publishChecksOptions(session)})
+      const current=store.getSession(sessionId)
+      current.lastPublication={...result,paths:selection.paths,message:selection.message,verifiedAt:now()}
+      delete current.lastPublishError
+      store.save(current)
+      return result
+    } catch(error) {
+      if(error.extra?.commit){const current=store.getSession(sessionId);current.lastPublishError={code:error.code,message:error.message,commit:error.extra.commit,paths:selection.paths,commitMessage:selection.message,at:now()};store.save(current)}
+      throw error
+    } finally {publishing.delete(key);publishPanel('publish')}
   }
 
   /**
@@ -286,7 +334,10 @@ export function createServer({
       }
       const fresh = runs.get(latest.id) // git took a while: do not overwrite anything saved meanwhile
       if (savedDiff) fresh.hasChanges = true
-      fresh.summary = runs.readLog(fresh.id, 0).log.trim().slice(-SUMMARY_MAX_CHARS)
+      const fullOutput=runs.readLog(fresh.id,0).log
+      fresh.summary = fullOutput.trim().slice(-SUMMARY_MAX_CHARS)
+      const suggestion=fullOutput.split('\n').filter(line=>line.startsWith('커밋 제안: ')).at(-1)?.slice('커밋 제안: '.length)
+      fresh.commitMessage=defaultCommitMessage(fresh.branch,changed,suggestion)
       runs.save(fresh)
     } catch { /* the run record vanished */ }
   }
@@ -308,8 +359,33 @@ export function createServer({
     } catch { /* the run record vanished: nothing to attach to */ }
   }
 
+  function applyFixResults(run) {
+    try {
+      const latest = runs.get(run.id)
+      const entries = fixResultEntries(latest, runs.readLog(latest.id, 0).log)
+      store.appendAiComments(latest.sessionId, entries)
+      const fresh = runs.get(latest.id)
+      fresh.fixResultsApplied = true
+      runs.save(fresh)
+    } catch (error) { process.stderr.write(`fix result comments could not be saved for ${run.id}: ${error.message}\n`) }
+  }
+
+  function applyFixQuestions(run,text) {
+    if (run.mode === 'answer' || !run.nonce) return
+    const questions = parseFixQuestions({text,threadIds:run.threadIds,nonce:run.nonce})
+    if (!questions.length) return
+    const result = store.appendAiComments(run.sessionId,questions.map(question=>({...question,kind:'question',agent:run.agent,runId:run.id})))
+    if (!result.added.length) return
+    const latest = runs.get(run.id)
+    latest.questionCount = (latest.questionCount || 0) + result.added.length
+    latest.questionThreadIds = [...new Set([...(latest.questionThreadIds || []),...result.added])]
+    runs.save(latest)
+    publishPanel('question')
+  }
+
   async function startRun(sessionId, body) {
     const session = store.withRevision(sessionId, body.revision)
+    if(publishing.has('repo:'+session.repoPath))throw new ApiError(409,'publish_in_progress','커밋·푸시가 끝난 뒤 AI를 실행하세요.')
     const agent = body.agent ?? session.agent
     if (agent !== 'claude' && agent !== 'codex') throw new ApiError(400, 'invalid_field', 'agent must be claude or codex')
     const mode = body.mode ?? 'fix'
@@ -321,17 +397,25 @@ export function createServer({
     if(body.threadIds!==undefined){if(mode!=='answer'||!Array.isArray(body.threadIds)||!body.threadIds.length||body.threadIds.some(id=>typeof id!=='string'||!session.threads.some(t=>t.id===id)))throw new ApiError(400,'invalid_field','Choose existing review threads for an answer');const requested=new Set(body.threadIds);threads=threads.filter(t=>requested.has(t.id))}
     if (threads.length === 0) throw new ApiError(400, 'no_runnable_threads', mode === 'answer' ? 'no open questions waiting for an answer; add a follow-up comment to request another reply' : 'no open, up-to-date threads to send to the agent')
     const nonce = newNonce()
+    const publication = await publicationState({exec,cwd:session.repoPath,branch:session.branch,gitBinary:resolveBin('git') ?? 'git',now})
     let prompt
     try {
       const readFileLines = (relativePath) => readRepoFileLines(session.repoPath, relativePath)
-      prompt = mode === 'answer' ? buildAnswerPrompt({ session, threads, readFileLines, nonce }) : buildPrompt({ session, threads, readFileLines })
+      prompt = mode === 'answer' ? buildAnswerPrompt({ session, threads, readFileLines, nonce, publication }) : buildPrompt({ session, threads, readFileLines, publication, nonce })
     } catch (error) {
       throw new ApiError(400, 'prompt_too_large', error.message)
     }
-    const run = await runs.start({ session, threadIds: threads.map((thread) => thread.id), agent, prompt, mode, nonce, meta: {reviewPaths:[...new Set(threads.flatMap(thread=>[thread.path,...(thread.oldPath?[thread.oldPath]:[])]))],autoCommit:mode==='fix'&&body.autoCommit===true, branch: session.branch ?? null, threadSnapshots: snapshotThreads(threads) } })
-    session.agent = agent
-    if (mode === 'fix') session.status = 'fixing'
-    store.save(session)
+    const startKey='repo:'+session.repoPath
+    if(publishing.has(startKey))throw new ApiError(409,'publish_in_progress','커밋·푸시가 끝난 뒤 AI를 실행하세요.')
+    let run
+    publishing.add(startKey)
+    try {
+      run = await runs.start({ session, threadIds: threads.map((thread) => thread.id), agent, prompt, mode, nonce, meta: {reviewPaths:[...new Set(threads.flatMap(thread=>[thread.path,...(thread.oldPath?[thread.oldPath]:[])]))],autoCommit:mode==='fix'&&body.autoCommit===true, publicationBefore: publication, branch: session.branch ?? null, threadSnapshots: snapshotThreads(threads), requestedComments: mode === 'fix' ? threads.flatMap(thread => thread.comments.filter(comment => comment.author !== 'ai' && !comment.fixCompletedAt).map(comment => ({threadId: thread.id, commentId: comment.id, body: comment.body, updatedAt: comment.updatedAt}))) : [] } })
+    } finally {publishing.delete(startKey)}
+    const currentSession = store.getSession(sessionId)
+    currentSession.agent = agent
+    if (mode === 'fix') currentSession.status = 'fixing'
+    store.save(currentSession)
     return run
   }
 
@@ -628,7 +712,7 @@ export function createServer({
     const body = method === 'GET' ? {} : await readBody(request)
 
     if (segments[0] === 'shutdown' && method === 'POST') {
-      if (runs.hasRunning()) throw new ApiError(409, 'run_in_progress', 'an AI run is still in progress')
+      if (runs.hasRunning() || publishing.size) throw new ApiError(409, 'run_in_progress', 'an AI run or publication is still in progress')
       sendJson(response, 200, { ok: true })
       setTimeout(() => close().then(() => exitImpl(0)), 50)
       return
@@ -648,6 +732,14 @@ export function createServer({
       const session = store.listSessions().find((entry) => entry.kind === 'pr' && entry.pr?.owner === owner && entry.pr?.repo === repo && entry.pr?.number === number) ?? null
       return sendJson(response, 200, { pr, diff: { files }, localWorktree: localWorktree ? { path: localWorktree.path, branch: localWorktree.branch } : null, session })
     }
+    if (segments[0] === 'runs' && segments.length === 1 && method === 'GET') {
+      const sessions = new Map(store.listSessions().map(session => [session.id, session]))
+      const active = runs.list().filter(run => run.committing || run.status === 'running' || run.status === 'queued').map(run => {
+        const session = sessions.get(run.sessionId)
+        return { id: run.id, sessionId: run.sessionId, repoPath: run.cwd, repoDisplayName: session?.repoDisplayName || run.cwd, branch: run.branch || session?.branch || '', agent: run.agent, mode: run.mode, status: run.committing?'running':run.status, startedAt: run.startedAt }
+      })
+      return sendJson(response, 200, { runs: active })
+    }
     if (segments[0] === 'runs' && segments[1]) {
       const runId = segments[1]
       if (method === 'GET' && segments.length === 2) {
@@ -655,6 +747,7 @@ export function createServer({
         const { log, next } = runs.readLog(runId, Number(url.searchParams.get('logFrom') ?? 0))
         return sendJson(response, 200, { run, log, logNext: next })
       }
+      if (method === 'POST' && segments[2] === 'publish' && segments.length === 3) return sendJson(response, 200, await publishFixRun(runId))
       if (method === 'POST' && segments[2] === 'cancel') { const run = runs.cancel(runId); publishPanel('run'); return sendJson(response, 200, run) }
     }
     if (segments[0] === 'bridge') {
@@ -696,6 +789,16 @@ export function createServer({
         }
       }
       const sessionId = segments[1]
+      if(segments[2]==='publish-checks' && segments.length===3 && method==='GET')return sendJson(response,200,{checks:store.getSession(sessionId).publishChecks||null})
+      if(segments[2]==='publish-preview' && segments.length===3 && method==='GET'){
+        const session=store.getSession(sessionId),plan=await previewWorkingTree({exec,gitBinary:resolveBin('git')??'git',session})
+        const suggestion=runs.list().filter(run=>run.cwd===session.repoPath && run.branch===session.branch && run.mode!=='answer' && run.commitMessage && run.changedFiles?.some(path=>plan.paths.includes(path))).sort((a,b)=>b.startedAt.localeCompare(a.startedAt))[0]?.commitMessage
+        if(!plan.retryCommit)plan.message=defaultCommitMessage(session.branch,plan.paths,suggestion)
+        plan.checks=planPublishChecks(session.repoPath,plan.retryCommit?session.lastPublishError.paths:plan.paths)
+        return sendJson(response,200,plan)
+      }
+      if(segments[2]==='publish' && segments.length===3 && method==='POST')return sendJson(response,200,await publishSessionChanges(sessionId,body))
+      if (segments[2] === 'publication' && method === 'GET') { const session=store.getSession(sessionId);return sendJson(response,200,await publicationState({exec,cwd:session.repoPath,branch:session.branch,gitBinary:resolveBin('git') ?? 'git',now})) }
       if (segments.length === 2) {
         if (method === 'GET') return sendJson(response, 200, await sessionDetail(sessionId))
         if (method === 'PATCH') { const result = store.updateSession(sessionId, body); publishPanel('session'); return sendJson(response, 200, result) }
@@ -712,6 +815,10 @@ export function createServer({
           if (segments.length === 6 && method === 'PATCH') { const result = store.updateComment(sessionId, threadId, commentId, body); publishPanel('thread'); return sendJson(response, 200, result) }
           if (segments.length === 6 && method === 'DELETE') { const result = store.deleteComment(sessionId, threadId, commentId, body); publishPanel('thread'); return sendJson(response, 200, result) }
         }
+      }
+      if (segments[2] === 'runs' && segments.length === 3 && method === 'GET') {
+        store.getSession(sessionId)
+        return sendJson(response, 200, { runs: runs.list().filter(run => run.sessionId === sessionId).map(run => ({id: run.id, mode: run.mode, status: run.status, agent: run.agent, startedAt: run.startedAt})) })
       }
       if (segments[2] === 'runs' && segments.length === 3 && method === 'POST') { const run = await startRun(sessionId, body); ensureRunPolling(); publishPanel('run'); return sendJson(response, 202, run) }
     }
@@ -733,12 +840,25 @@ export function createServer({
   function scheduleIdleCheck() {
     if (!idleMs) return
     idleTimer = setInterval(() => {
-      if (Date.now() - lastActivity >= idleMs && !runs.hasRunning()) close().then(() => exitImpl(0))
+      if (Date.now() - lastActivity >= idleMs && !runs.hasRunning() && publishing.size===0) close().then(() => exitImpl(0))
     }, Math.min(idleMs, 60_000))
     idleTimer.unref()
   }
 
   async function listen() {
+    for(const session of store.listSessionsFull()){
+      if(session.publishChecks?.status==='running'){
+        session.publishChecks.status='interrupted'
+        session.publishChecks.endedAt=now()
+        session.publishChecks.reason='서버가 재시작되어 검증이 중단됐습니다. 커밋·푸시를 다시 요청해 검증하세요.'
+        for(const step of session.publishChecks.steps)if(step.status==='running'||step.status==='queued')step.status='interrupted'
+        store.save(session)
+      }
+    }
+    // Restore historical results from recorded reports, without rerunning the AI or touching code.
+    for (const run of runs.list()) {
+      if (run.mode !== 'answer' && !['running', 'queued'].includes(run.status) && run.requestedComments?.length && !run.fixResultsApplied) applyFixResults(run)
+    }
     httpServer = createHttpServer((request, response) => {
       route(request, response).catch((error) => sendError(response, error))
     })

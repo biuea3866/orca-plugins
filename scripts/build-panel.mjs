@@ -8,6 +8,7 @@ import { buildPanelDocument } from '../server/lib/panel-document.mjs'
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)))
 const modules = {
+  host: readFileSync(join(root, 'ui', 'lib', 'host.mjs'), 'utf8'),
   selection: readFileSync(join(root, 'ui', 'lib', 'selection.mjs'), 'utf8'),
   threads: readFileSync(join(root, 'ui', 'lib', 'threads.mjs'), 'utf8'),
   confirm: readFileSync(join(root, 'ui', 'lib', 'confirm.mjs'), 'utf8'),

@@ -11,7 +11,12 @@
 //   - only the run's files are committed (--only semantics): the user's other staged or dirty work stays untouched
 //   - never a forced push; a failed push keeps the local commit and reports it so the push alone can be retried
 
+import {runPublishChecks} from './pre-publish-checks.mjs'
+import {mkdtempSync,rmSync} from 'node:fs'
+import {tmpdir} from 'node:os'
+import {join} from 'node:path'
 import { ApiError } from './store.mjs'
+import {defaultCommitMessage,validateCommitMessage} from './commit-message.mjs'
 import { BASE_BRANCH } from './github.mjs'
 
 const GIT_TIMEOUT_MS = 60_000
@@ -21,7 +26,7 @@ const PUSH_TIMEOUT_MS = 120_000
  * @param {{ exec: Function, gitBinary?: string, run: object, session: { repoPath: string, branch: string } }} input
  * @returns {Promise<{ commit: string, branch: string, remote: string, upstreamSet: boolean }>}
  */
-export async function publishRun({ exec, gitBinary = 'git', run, session }) {
+export async function publishRun({ exec, gitBinary = 'git', run, session, message, expectedHead, validateBeforeCommit, checksOptions }) {
   const refuse = (message) => { throw new ApiError(400, 'not_publishable', message) }
   if ((run.mode ?? 'fix') !== 'fix') refuse('only an AI fix run can be committed and pushed')
   if (run.status !== 'succeeded') refuse(`the run is ${run.status}; only a succeeded run can be committed and pushed`)
@@ -56,21 +61,50 @@ export async function publishRun({ exec, gitBinary = 'git', run, session }) {
   if (hasUpstream && mergeConfig.stdout.trim() !== `refs/heads/${branch}`) {
     throw new ApiError(400, 'upstream_mismatch', `${branch} tracks ${configuredRemote}/${mergeConfig.stdout.trim().replace(/^refs\/heads\//, '')}; push by hand so another branch is not updated by accident`)
   }
+  const subject = validateCommitMessage(message ?? defaultCommitMessage(branch,paths,run.commitMessage),branch)
   const remote = hasUpstream ? configuredRemote : 'origin'
+
+  // Refuse a known divergent remote before changing either history or the user's index.
+  const remoteState = await git(['ls-remote','--heads','--',remote,`refs/heads/${branch}`], {allowFailure:true,timeout:PUSH_TIMEOUT_MS,env:{...process.env,GIT_TERMINAL_PROMPT:'0',...(process.env.GIT_SSH_COMMAND?{}:{GIT_SSH_COMMAND:'ssh -o BatchMode=yes'})}})
+  const remoteTip = remoteState.code===0 ? remoteState.stdout.split('\n').map(line=>line.split(/\s+/)).find(parts=>parts[1]===`refs/heads/${branch}`)?.[0] : null
+  if(remoteTip && (await git(['merge-base','--is-ancestor',remoteTip,'HEAD'],{allowFailure:true})).code!==0)throw new ApiError(409,'non_fast_forward','원격 이력이 현재 로컬 HEAD에 포함되어 있지 않습니다. 리베이스·동기화 상태를 확인하세요. 이 도구는 강제 푸시하지 않습니다.')
 
   // A previous attempt that committed but failed to push left its commit at HEAD: only the push is repeated.
   const headBefore = (await git(['rev-parse', 'HEAD'])).stdout.trim()
+  if(expectedHead && expectedHead !== headBefore)throw new ApiError(409,'publication_changed','HEAD가 변경됐습니다. 게시 내용을 다시 확인하세요.')
+  async function sourceFingerprint(){
+    const patch=await git(['--literal-pathspecs','diff','--binary','--no-ext-diff','--no-textconv','HEAD','--',...paths])
+    const untracked=(await git(['--literal-pathspecs','ls-files','--others','--exclude-standard','-z','--',...paths])).stdout.split('\0').filter(Boolean)
+    const hashes=untracked.length?(await git(['hash-object','--no-filters','--',...untracked])).stdout:''
+    return JSON.stringify({patch:patch.stdout,untracked,hashes})
+  }
+  const checkedInput=await sourceFingerprint()
+  const checks=await runPublishChecks({exec,cwd,paths,...checksOptions})
+  if(await sourceFingerprint()!==checkedInput)throw new ApiError(409,'publication_changed','검증 중 대상 파일이 변경됐습니다. 다시 검증한 뒤 게시하세요. 커밋·푸시하지 않았습니다.')
+  if((await git(['rev-parse','HEAD'])).stdout.trim()!==headBefore || (await git(['rev-parse','--abbrev-ref','HEAD'])).stdout.trim()!==branch)throw new ApiError(409,'publication_changed','검증 중 HEAD 또는 브랜치가 변경됐습니다. 커밋·푸시하지 않았습니다.')
   let commit = headBefore
   if(run.committed?.commit && run.committed.commit!==headBefore)refuse('HEAD moved after this run was committed; review before pushing')
   if (!(run.committed?.commit===headBefore || (run.publishError?.commit && run.publishError.commit === headBefore))) {
-    await git(['--literal-pathspecs', 'add', '--', ...paths])
-    const threads = (run.threadIds ?? []).length
-    const committed = await git(['--literal-pathspecs', 'commit', '-q', '-m', `fix: 리뷰 코멘트 반영 (스레드 ${threads}개)`, '-m', `Local Self Review AI 수정 실행 ${run.id}${run.agent ? ` (${run.agent})` : ''}`, '--', ...paths], { allowFailure: true })
-    if (committed.code !== 0) {
-      const text = `${committed.stdout ?? ''}${committed.stderr ?? ''}`.trim()
-      throw new ApiError(400, /nothing (added )?to commit|no changes added/i.test(text) ? 'nothing_to_commit' : 'commit_failed', text || 'git commit failed')
-    }
-    commit = (await git(['rev-parse', 'HEAD'])).stdout.trim()
+    const temporary = mkdtempSync(join(tmpdir(),'self-review-publish-index-'))
+    const indexEnv = {...process.env,GIT_INDEX_FILE:join(temporary,'index')}
+    try {
+      // The temporary index starts from HEAD, so staged deletions still have a tracked path to remove.
+      await git(['read-tree','HEAD'],{env:indexEnv})
+      const listed = await git(['--literal-pathspecs','ls-files','--cached','--others','--exclude-standard','-z','--',...paths],{env:indexEnv})
+      const selected = [...new Set(listed.stdout.split('\0').filter(Boolean))]
+      if(!selected.length)throw new ApiError(400,'nothing_to_commit','이 실행의 대상 파일에는 커밋할 변경이 없습니다.')
+      await git(['--literal-pathspecs','add','--all','--',...selected],{env:indexEnv})
+      if(validateBeforeCommit)await validateBeforeCommit()
+      if(await sourceFingerprint()!==checkedInput)throw new ApiError(409,'publication_changed','검증 후 파일이 변경됐습니다. 다시 검증하세요. 커밋·푸시하지 않았습니다.')
+      const currentHead=(await git(['rev-parse','HEAD'])).stdout.trim(),currentBranch=(await git(['rev-parse','--abbrev-ref','HEAD'])).stdout.trim()
+      if(currentHead!==headBefore||currentBranch!==branch)throw new ApiError(409,'repository_changed','커밋 준비 중 브랜치 또는 HEAD가 바뀌었습니다. 상태를 확인하고 다시 시도하세요.')
+      const threads = (run.threadIds ?? []).length
+      const committed = await git(['commit','-q','-m',subject,'-m',`Local Self Review ${run.id} · 스레드 ${threads}개${run.agent ? ` (${run.agent})` : ''}`],{allowFailure:true,env:indexEnv})
+      if(committed.code!==0){const text=`${committed.stdout ?? ''}${committed.stderr ?? ''}`.trim();throw new ApiError(400,/nothing (added )?to commit|no changes added/i.test(text)?'nothing_to_commit':'commit_failed',text||'git commit failed')}
+      commit=(await git(['rev-parse','HEAD'])).stdout.trim()
+      // Reset only this run's paths in the real index; unrelated staged and working-tree content stays intact.
+      await git(['--literal-pathspecs','reset','-q',commit,'--',...selected])
+    } finally { rmSync(temporary,{recursive:true,force:true}) }
   }
 
   const refspec = `HEAD:refs/heads/${branch}`
@@ -78,5 +112,8 @@ export async function publishRun({ exec, gitBinary = 'git', run, session }) {
   const env = { ...process.env, GIT_TERMINAL_PROMPT: '0', ...(process.env.GIT_SSH_COMMAND ? {} : { GIT_SSH_COMMAND: 'ssh -o BatchMode=yes' }) }
   const pushed = await git(hasUpstream ? ['push', remote, refspec] : ['push', '-u', remote, refspec], { allowFailure: true, timeout: PUSH_TIMEOUT_MS, env })
   if (pushed.code !== 0) throw new ApiError(502, 'push_failed', (pushed.stderr || pushed.stdout || 'git push failed').trim(), { commit })
-  return { commit, branch, remote, upstreamSet: !hasUpstream }
+  const verified=await git(['ls-remote','--heads','--',remote,`refs/heads/${branch}`],{allowFailure:true,timeout:PUSH_TIMEOUT_MS,env})
+  const remoteHead=verified.stdout.split('\n').map(line=>line.split(/\s+/)).find(parts=>parts[1]===`refs/heads/${branch}`)?.[0]
+  if(verified.code!==0||remoteHead!==commit)throw new ApiError(502,'remote_unverified','커밋·푸시 명령 이후 원격 SHA를 확인하지 못했습니다. 원격 반영은 아직 미확인입니다.',{commit})
+  return { commit, branch, remote, remoteHead, upstreamSet: !hasUpstream, checks }
 }

@@ -80,3 +80,7 @@ test('historical question prompt labels selected text as a past snapshot',()=>{
  const prompt=buildAnswerPrompt({session,threads:[thread('thr_eeeeeeeeeeee',[comment('삭제한 이유?')],{applicability:'outdated'})],readFileLines:()=>[],nonce:'abc123'});
  assert.match(prompt,/과거 스냅샷/);assert.match(prompt,/삭제한 이유/);
 });
+test('a fix result for an older request does not hide a newer unanswered question',()=>{
+ const thread={status:'open',applicability:'current',comments:[{body:'new question'},{author:'ai',kind:'fix-result',body:'older request result'}]}
+ assert.deepEqual(selectAnswerableThreads([thread]),[thread])
+})

@@ -18,7 +18,7 @@ if (owner) {
   process.exit(0)
 }
 
-const server = createServer({ homeDir, pluginRoot })
+const server = createServer({ homeDir, pluginRoot, panelRoot: process.env.ORCA_SELF_REVIEW_PANEL_ROOT || pluginRoot })
 const port = await server.listen()
 if (foreground) process.stdout.write(`Local Self Review server listening on http://127.0.0.1:${port}/ (home: ${homeDir})\n`)
 
