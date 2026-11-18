@@ -3,7 +3,7 @@
 
 import {StringDecoder} from 'node:string_decoder'
 import { spawn } from 'node:child_process'
-import { createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, statSync, openSync, readSync, closeSync, writeFileSync, renameSync, rmSync } from 'node:fs'
+import { createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, statSync, openSync, readSync, closeSync, writeFileSync, rmSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { join, resolve } from 'node:path'
 import { ApiError, makeId, writeJsonAtomic } from './store.mjs'
@@ -176,20 +176,55 @@ export class RunManager {
     const path = this.claimPath(runId)
     const create = () => { const fd = openSync(path, 'wx'); try { writeFileSync(fd, JSON.stringify({ pid: process.pid, at: Date.now() })) } finally { closeSync(fd) } }
     try { create(); return true } catch (error) { if (error.code !== 'EEXIST') return true }
-    if (!this.claimIsStale(path)) return false
-    // Moving the stale file aside is atomic: of several processes stealing it, one wins and the others find nothing to move.
-    const aside = `${path}.stale.${process.pid}.${Date.now()}`
-    try { renameSync(path, aside) } catch { return false }
-    try { rmSync(aside, { force: true }) } catch { /* leave it */ }
-    try { create(); return true } catch (error) { return error.code !== 'EEXIST' }
+    const seen = this.readClaim(path)
+    if (!seen || !this.claimIsStale(seen)) return false
+    // Only one process at a time may clear a stale claim: moving a claim aside to look at it could take a live
+    // claim another stealer had just made. The one holding the steal lock re-checks that the file is still the one
+    // judged stale, removes it and creates its own; anyone else gives way (create() is exclusive, so a claim made in
+    // between by someone else simply wins).
+    const lock = `${path}.steal`
+    if (!this.takeStealLock(lock)) return false
+    try {
+      const current = this.readClaim(path)
+      if (!current || current.ino !== seen.ino || current.raw !== seen.raw) return false
+      rmSync(path, { force: true })
+      try { create(); return true } catch (error) { return error.code !== 'EEXIST' }
+    } finally {
+      rmSync(lock, { force: true })
+    }
   }
 
-  claimIsStale(path) {
-    let owner = null, writtenAt
-    try { owner = JSON.parse(readFileSync(path, 'utf8')) } catch { /* no readable owner: judged by age only */ }
-    try { writtenAt = owner?.at ?? statSync(path).mtimeMs } catch { return false }
-    if (Date.now() - writtenAt > this.claimStaleMs) return true
-    return Boolean(owner?.pid) && !pidAlive(owner.pid)
+  /** A steal lock is held for a moment; one left by a dead process (or an hour-old hang) is cleared once and retried. */
+  takeStealLock(lock) {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const fd = openSync(lock, 'wx')
+        try { writeFileSync(fd, JSON.stringify({ pid: process.pid, at: Date.now() })) } finally { closeSync(fd) }
+        return true
+      } catch (error) {
+        if (error.code !== 'EEXIST') return false
+        const held = this.readClaim(lock)
+        const abandoned = !held || Date.now() - held.writtenAt > 30_000 || (Boolean(held.owner?.pid) && !pidAlive(held.owner.pid))
+        if (!abandoned) return false
+        rmSync(lock, { force: true })
+      }
+    }
+    return false
+  }
+
+  readClaim(path) {
+    try {
+      const stat = statSync(path)
+      const raw = readFileSync(path, 'utf8')
+      let owner = null
+      try { owner = JSON.parse(raw) } catch { /* no readable owner: judged by age only */ }
+      return { raw, owner, ino: stat.ino, writtenAt: owner?.at ?? stat.mtimeMs }
+    } catch { return null }
+  }
+
+  claimIsStale(claim) {
+    if (Date.now() - claim.writtenAt > this.claimStaleMs) return true
+    return Boolean(claim.owner?.pid) && !pidAlive(claim.owner.pid)
   }
 
   releaseClaim(runId) {

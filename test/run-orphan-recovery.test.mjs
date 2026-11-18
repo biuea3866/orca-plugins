@@ -269,3 +269,26 @@ test('only one of several stealers of a stale claim finishes the run', async () 
   await Promise.all(lists.map((list) => manager(homeDir, list).adoptOrphans()))
   assert.equal(lists.flat().length, 1)
 })
+
+test('several processes stealing the same stale claim at once: exactly one wins every time', async () => {
+  const workers = 5, trials = 150
+  const base = mkdtempSync(join(tmpdir(), 'sr-steal-'))
+  const helper = new URL('./helpers/claim-worker.mjs', import.meta.url).pathname
+  const kids = Array.from({ length: workers }, (_, index) => spawn(process.execPath, [helper, base, String(index), String(trials)], { stdio: 'inherit' }))
+  await later(500) // let the workers start
+  const { readdirSync, readFileSync } = await import('node:fs')
+  const runId = (trial) => 'run_' + String(trial).padStart(12, '0')
+  let several = 0, none = 0
+  for (let trial = 0; trial < trials; trial += 1) {
+    mkdirSync(join(base, 'runs', runId(trial)), { recursive: true })
+    writeFileSync(join(base, 'runs', runId(trial), 'finish.claim'), JSON.stringify({ pid: 2_000_000_000, at: Date.now() })) // left by a process that no longer exists
+    writeFileSync(join(base, `go.${trial}`), '')
+    while (readdirSync(base).filter((name) => name.startsWith(`res.${trial}.`)).length < workers) await later(1)
+    const winners = readdirSync(base).filter((name) => name.startsWith(`res.${trial}.`)).filter((name) => readFileSync(join(base, name), 'utf8') === '1').length
+    if (winners > 1) several += 1
+    if (winners === 0) none += 1
+  }
+  await Promise.all(kids.map((kid) => new Promise((resolve) => kid.on('close', resolve))))
+  assert.equal(several, 0, `${several} of ${trials} trials had more than one winner`)
+  assert.equal(none, 0, `${none} of ${trials} trials had no winner`)
+})
