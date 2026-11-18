@@ -3,7 +3,7 @@
 
 import {StringDecoder} from 'node:string_decoder'
 import { spawn } from 'node:child_process'
-import { createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, statSync, openSync, readSync, closeSync, writeFileSync } from 'node:fs'
+import { createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, statSync, openSync, readSync, closeSync, writeFileSync, renameSync, rmSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { join, resolve } from 'node:path'
 import { ApiError, makeId, writeJsonAtomic } from './store.mjs'
@@ -73,8 +73,9 @@ export function pickRunToShow(runs) {
 }
 
 export class RunManager {
-  constructor({ homeDir, agentCommands, git, now = () => new Date().toISOString(), onFinished = () => {}, onOutput = () => {}, ignoreChangedPaths = [], orphanPollMs = 1000 }) {
+  constructor({ homeDir, agentCommands, git, now = () => new Date().toISOString(), onFinished = () => {}, onOutput = () => {}, ignoreChangedPaths = [], orphanPollMs = 1000, claimStaleMs = 10 * 60_000 }) {
     this.orphanPollMs = orphanPollMs
+    this.claimStaleMs = claimStaleMs
     this.watchers = new Map()
     this.ignoreChangedPaths = ignoreChangedPaths
     this.runsDir = join(homeDir, 'runs')
@@ -164,10 +165,35 @@ export class RunManager {
     return Boolean(run.serverPid) && run.serverPid !== process.pid && pidAlive(run.serverPid)
   }
 
-  /** Whoever creates the claim file finishes the run; any other process that gets here later does nothing. */
+  claimPath(runId) { return join(this.runDir(runId), 'finish.claim') }
+
+  /**
+   * Whoever creates the claim file finishes the run; any other process that gets here later does nothing.
+   * The claim records its owner: one left by a process that died before saving (or that is older than any finish can
+   * take) is abandoned and is taken over, otherwise the run would stay `running` forever.
+   */
   claimFinish(runId) {
-    try { closeSync(openSync(join(this.runDir(runId), 'finish.claim'), 'wx')); return true }
-    catch (error) { return error.code !== 'EEXIST' }
+    const path = this.claimPath(runId)
+    const create = () => { const fd = openSync(path, 'wx'); try { writeFileSync(fd, JSON.stringify({ pid: process.pid, at: Date.now() })) } finally { closeSync(fd) } }
+    try { create(); return true } catch (error) { if (error.code !== 'EEXIST') return true }
+    if (!this.claimIsStale(path)) return false
+    // Moving the stale file aside is atomic: of several processes stealing it, one wins and the others find nothing to move.
+    const aside = `${path}.stale.${process.pid}.${Date.now()}`
+    try { renameSync(path, aside) } catch { return false }
+    try { rmSync(aside, { force: true }) } catch { /* leave it */ }
+    try { create(); return true } catch (error) { return error.code !== 'EEXIST' }
+  }
+
+  claimIsStale(path) {
+    let owner = null, writtenAt
+    try { owner = JSON.parse(readFileSync(path, 'utf8')) } catch { /* no readable owner: judged by age only */ }
+    try { writtenAt = owner?.at ?? statSync(path).mtimeMs } catch { return false }
+    if (Date.now() - writtenAt > this.claimStaleMs) return true
+    return Boolean(owner?.pid) && !pidAlive(owner.pid)
+  }
+
+  releaseClaim(runId) {
+    try { rmSync(this.claimPath(runId), { force: true }) } catch { /* nothing to release */ }
   }
 
   watch(run) {
@@ -208,18 +234,23 @@ export class RunManager {
     if (!this.needsFinish(latest) || this.ownedByOtherServer(latest)) return
     if (latest.status !== 'cancelled' && pidAlive(latest.pid)) return // still being worked on (a fallback agent, or a slow exit)
     if (!this.claimFinish(runId)) return // another process is finishing it
-    latest = this.get(runId)
-    const cancelled = latest.status === 'cancelled'
-    latest.status = cancelled ? 'cancelled' : this.isComplete(latest, this.readLog(runId, 0).log) ? 'succeeded' : 'interrupted'
-    latest.exitCode = null
-    latest.endedAt = latest.endedAt ?? this.now()
-    latest.recoveredAfterRestart = true
-    latest.changedFiles = await this.collectChangedFiles(latest)
-    if (this.get(runId).status === 'cancelled') latest.status = 'cancelled' // cancelled while the changes were being collected
-    latest.finalized = true
-    latest.serverPid = process.pid
-    if (latest.autoCommit) { latest.autoCommit = false; latest.autoCommitSkipped = 'the server restarted during the run, so the end of the run was not verified' }
-    this.save(latest)
+    try {
+      latest = this.get(runId)
+      const cancelled = latest.status === 'cancelled'
+      latest.status = cancelled ? 'cancelled' : this.isComplete(latest, this.readLog(runId, 0).log) ? 'succeeded' : 'interrupted'
+      latest.exitCode = null
+      latest.endedAt = latest.endedAt ?? this.now()
+      latest.recoveredAfterRestart = true
+      latest.changedFiles = await this.collectChangedFiles(latest)
+      if (this.get(runId).status === 'cancelled') latest.status = 'cancelled' // cancelled while the changes were being collected
+      latest.finalized = true
+      latest.serverPid = process.pid
+      if (latest.autoCommit) { latest.autoCommit = false; latest.autoCommitSkipped = 'the server restarted during the run, so the end of the run was not verified' }
+      this.save(latest)
+    } catch (error) {
+      this.releaseClaim(runId) // nothing was recorded: a later start may try again
+      throw error
+    }
     try { await this.onFinished(latest) } catch { /* ignore */ }
   }
 

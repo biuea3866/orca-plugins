@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, realpathSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, realpathSync, existsSync, utimesSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync, spawn } from 'node:child_process'
@@ -23,7 +23,7 @@ function orphan({ pid, log = REPORT, status = 'running', edit = true, meta = {} 
   if (edit) writeFileSync(join(repo, 'a.js'), 'a\nedited by the agent\n')
   return { repo, homeDir, id }
 }
-const manager = (homeDir, finished, orphanPollMs = 40) => new RunManager({ homeDir, agentCommands: {}, git: new GitReader({ exec: execCommand, gitBinary: 'git' }), onFinished: async (run) => { finished.push(run) }, orphanPollMs })
+const manager = (homeDir, finished, orphanPollMs = 40, extra = {}) => new RunManager({ homeDir, agentCommands: {}, git: new GitReader({ exec: execCommand, gitBinary: 'git' }), onFinished: async (run) => { finished.push(run) }, orphanPollMs, ...extra })
 
 test('a run whose agent died with the old server process is finished with what it left behind', async () => {
   const { homeDir, id } = orphan({ pid: 2_000_000_000 }) // no such process
@@ -208,4 +208,64 @@ test('a failing finish handler does not stop the server from starting', async ()
   const { homeDir } = orphan({ pid: 2_000_000_000, meta: { serverPid: 2_000_000_000 } })
   const runs = new RunManager({ homeDir, agentCommands: {}, git: new GitReader({ exec: execCommand, gitBinary: 'git' }), onFinished: async () => { throw new Error('boom') }, orphanPollMs: 40 })
   await runs.adoptOrphans()
+})
+
+const claimPath = (homeDir, id) => join(homeDir, 'runs', id, 'finish.claim')
+
+test('a finish claim left by a process that died before saving is taken over, not left to block the run forever', async () => {
+  const { homeDir, id } = orphan({ pid: 2_000_000_000, meta: { serverPid: 2_000_000_000 } })
+  writeFileSync(claimPath(homeDir, id), JSON.stringify({ pid: 2_000_000_001, at: Date.now() }))
+  const finished = [], runs = manager(homeDir, finished)
+  await runs.adoptOrphans()
+  assert.equal(finished.length, 1)
+  assert.equal(runs.get(id).status, 'succeeded')
+  assert.equal(runs.get(id).finalized, true)
+})
+
+test('a fresh finish claim held by a live process blocks, an old one does not', async () => {
+  const live = orphan({ pid: 2_000_000_000, meta: { serverPid: 2_000_000_000 } })
+  writeFileSync(claimPath(live.homeDir, live.id), JSON.stringify({ pid: process.ppid, at: Date.now() }))
+  const blocked = []
+  await manager(live.homeDir, blocked).adoptOrphans()
+  assert.equal(blocked.length, 0, 'another live process is finishing it right now')
+  const old = orphan({ pid: 2_000_000_000, meta: { serverPid: 2_000_000_000 } })
+  writeFileSync(claimPath(old.homeDir, old.id), JSON.stringify({ pid: process.ppid, at: Date.now() - 3_600_000 }))
+  const taken = []
+  await manager(old.homeDir, taken).adoptOrphans()
+  assert.equal(taken.length, 1, 'a claim that old is abandoned even if its pid was recycled')
+})
+
+test('a claim file without readable content is judged by its age', async () => {
+  const fresh = orphan({ pid: 2_000_000_000, meta: { serverPid: 2_000_000_000 } })
+  writeFileSync(claimPath(fresh.homeDir, fresh.id), '')
+  const none = []
+  await manager(fresh.homeDir, none).adoptOrphans()
+  assert.equal(none.length, 0)
+  const aged = orphan({ pid: 2_000_000_000, meta: { serverPid: 2_000_000_000 } })
+  writeFileSync(claimPath(aged.homeDir, aged.id), '')
+  const hourAgo = new Date(Date.now() - 3_600_000)
+  utimesSync(claimPath(aged.homeDir, aged.id), hourAgo, hourAgo)
+  const taken = []
+  await manager(aged.homeDir, taken).adoptOrphans()
+  assert.equal(taken.length, 1)
+})
+
+test('when finishing fails after the claim was taken the claim is released so a later start can retry', async () => {
+  const { homeDir, id } = orphan({ pid: 2_000_000_000, meta: { serverPid: 2_000_000_000 } })
+  const finished = [], runs = manager(homeDir, finished)
+  runs.readLog = () => { throw new Error('disk trouble') }
+  await runs.adoptOrphans()
+  assert.equal(existsSync(claimPath(homeDir, id)), false)
+  assert.equal(runs.get(id).status, 'running', 'nothing was half-recorded')
+  const retry = []
+  await manager(homeDir, retry).adoptOrphans()
+  assert.equal(retry.length, 1)
+})
+
+test('only one of several stealers of a stale claim finishes the run', async () => {
+  const { homeDir, id } = orphan({ pid: 2_000_000_000, meta: { serverPid: 2_000_000_000 } })
+  writeFileSync(claimPath(homeDir, id), JSON.stringify({ pid: 2_000_000_001, at: Date.now() }))
+  const lists = [[], [], []]
+  await Promise.all(lists.map((list) => manager(homeDir, list).adoptOrphans()))
+  assert.equal(lists.flat().length, 1)
 })
