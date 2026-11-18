@@ -478,7 +478,7 @@ export function createServer({
     annotateThreads(diff.files, session.threads)
     let threads = mode === 'answer' ? selectAnswerableThreads(session.threads) : selectRunnableThreads(session.threads)
     if(body.threadIds!==undefined){if(mode!=='answer'||!Array.isArray(body.threadIds)||!body.threadIds.length||body.threadIds.some(id=>typeof id!=='string'||!session.threads.some(t=>t.id===id)))throw new ApiError(400,'invalid_field','Choose existing review threads for an answer');const requested=new Set(body.threadIds);threads=threads.filter(t=>requested.has(t.id))}
-    if (threads.length === 0) throw new ApiError(400, 'no_runnable_threads', mode === 'answer' ? 'no open questions waiting for an answer; add a follow-up comment to request another reply' : 'no open, up-to-date threads to send to the agent')
+    if (threads.length === 0) throw new ApiError(400, 'no_runnable_threads', mode === 'answer' ? 'no open questions waiting for an answer; add a follow-up comment to request another reply' : 'no open thread has a comment waiting for the AI; every comment was already handled or the threads are resolved')
     const nonce = newNonce()
     const publication = await publicationState({exec,cwd:session.repoPath,branch:session.branch,gitBinary:resolveBin('git') ?? 'git',now})
     let prompt

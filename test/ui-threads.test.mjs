@@ -15,8 +15,9 @@ test('placeThreads groups threads by file, side and end line', () => {
   assert.equal(threadKey('a.js', 'new', 4), 'a.js|new|4')
 })
 
-test('countRunnable counts open + current threads only', () => {
-  assert.equal(countRunnable(threads), 1)
+test('countRunnable counts open threads that still have a comment waiting for the AI', () => {
+  assert.equal(countRunnable(threads), 2, 'an outdated thread is included: its code moved, the request did not go away')
+  assert.equal(countRunnable([{ ...threads[0], comments: [{ author: 'ai', body: 'reply' }] }]), 0, 'only AI comments: nothing is waiting')
 })
 
  test('a fresh follow-up on an outdated fixed thread stays runnable without redoing completed requests',()=>{
@@ -24,7 +25,8 @@ test('countRunnable counts open + current threads only', () => {
   assert.equal(countRunnable([thread]),1)
   assert.equal(countRunnable([{...thread,status:'resolved'}]),0)
   assert.equal(countRunnable([{...thread,comments:thread.comments.slice(0,2)}]),0)
-  assert.equal(countRunnable([{...thread,comments:[{body:'old unprocessed request'}]}]),0)
+  assert.equal(countRunnable([{...thread,comments:[{body:'old unprocessed request'}]}]),1,'an unprocessed request on moved code is not silently dropped')
+  assert.equal(countRunnable([{...thread,comments:[{body:'done',fixCompletedAt:'2026-11-12T00:00:00Z'}]}]),0,'a completed request is not sent again')
  })
 
 test('fix results display immediately after their own request and retain chronological order within each request',async()=>{
