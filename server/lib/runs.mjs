@@ -141,33 +141,83 @@ export class RunManager {
    * (update, crash, idle exit), but the handle that records its end is gone. Without this the run stays `running`
    * forever while the agent edits files, no reply is posted and the comment looks ignored.
    * An agent that is gone is finished now; one still alive is watched and finished when it exits.
+   * A run another live server process still owns is left to that process.
    */
   async adoptOrphans() {
     for (const run of this.list()) {
-      if (run.status !== 'running' && run.status !== 'queued') continue
-      if (this.children.has(run.id) || this.watchers.has(run.id)) continue
-      if (!pidAlive(run.pid)) { await this.finishOrphan(run.id); continue }
-      const timer = setInterval(() => {
-        if (pidAlive(run.pid)) return
-        clearInterval(timer); this.watchers.delete(run.id)
-        this.finishOrphan(run.id).catch(() => {})
-      }, this.orphanPollMs)
-      timer.unref?.()
-      this.watchers.set(run.id, timer)
+      try {
+        if (!this.needsFinish(run) || this.children.has(run.id) || this.watchers.has(run.id) || this.ownedByOtherServer(run)) continue
+        const cancelledUnfinished = run.status === 'cancelled'
+        if (!cancelledUnfinished && pidAlive(run.pid)) { this.watch(run); continue }
+        await this.finishOrphan(run.id)
+      } catch { /* one broken record must not keep the server from starting */ }
     }
   }
 
+  /** Still `running`/`queued`, or cancelled by a version that records who finished it but never finished. */
+  needsFinish(run) {
+    if (run.status === 'running' || run.status === 'queued') return true
+    return run.status === 'cancelled' && Boolean(run.serverPid) && !run.finalized
+  }
+
+  ownedByOtherServer(run) {
+    return Boolean(run.serverPid) && run.serverPid !== process.pid && pidAlive(run.serverPid)
+  }
+
+  /** Whoever creates the claim file finishes the run; any other process that gets here later does nothing. */
+  claimFinish(runId) {
+    try { closeSync(openSync(join(this.runDir(runId), 'finish.claim'), 'wx')); return true }
+    catch (error) { return error.code !== 'EEXIST' }
+  }
+
+  watch(run) {
+    const latest = this.get(run.id)
+    latest.serverPid = process.pid // this process answers for the run from now on
+    this.save(latest)
+    const timer = setInterval(() => {
+      let current
+      try { current = this.get(run.id) } catch { clearInterval(timer); this.watchers.delete(run.id); return }
+      if (!this.needsFinish(current)) { clearInterval(timer); this.watchers.delete(run.id); return }
+      if (pidAlive(current.pid)) return // a fallback agent may have replaced the one first seen
+      clearInterval(timer); this.watchers.delete(run.id)
+      this.finishOrphan(run.id).catch(() => {})
+    }, this.orphanPollMs)
+    timer.unref?.()
+    this.watchers.set(run.id, timer)
+  }
+
+  stopWatching() {
+    for (const timer of this.watchers.values()) clearInterval(timer)
+    this.watchers.clear()
+  }
+
+  /** The agent is gone; the exit code is not known, so a completion report in the log is what tells a finished run from a cut-off one. */
+  isComplete(run, log) {
+    const nonce = String(run.nonce || '').replace(/[^a-zA-Z0-9]/g, '')
+    const ids = run.threadIds ?? []
+    if (!ids.length) return false // a repair run has no thread report to verify
+    if (run.mode === 'answer') {
+      const ends = log.split(`@@END:${nonce}@@`).length - 1
+      return Boolean(nonce) && ids.every((id) => log.includes(`@@ANSWER:${id}:${nonce}@@`)) && ends >= ids.length
+    }
+    return ids.every((id) => new RegExp(`^-\\s+${id}:\\s*(?:수행|미수행)`, 'mu').test(log))
+  }
+
   async finishOrphan(runId) {
-    const latest = this.get(runId)
-    if (latest.status !== 'running' && latest.status !== 'queued') return // finished or cancelled in the meantime
-    const log = this.readLog(runId, 0).log
-    // The exit code died with the old process. A completion report in the log is what tells a finished run from a cut-off one.
-    const reported = /^-\s+thr_[0-9a-f]{12}:\s*(?:수행|미수행)/mu.test(log) || /@@END:[A-Za-z0-9]+@@/u.test(log)
-    latest.status = reported ? 'succeeded' : 'interrupted'
+    let latest = this.get(runId)
+    if (!this.needsFinish(latest) || this.ownedByOtherServer(latest)) return
+    if (latest.status !== 'cancelled' && pidAlive(latest.pid)) return // still being worked on (a fallback agent, or a slow exit)
+    if (!this.claimFinish(runId)) return // another process is finishing it
+    latest = this.get(runId)
+    const cancelled = latest.status === 'cancelled'
+    latest.status = cancelled ? 'cancelled' : this.isComplete(latest, this.readLog(runId, 0).log) ? 'succeeded' : 'interrupted'
     latest.exitCode = null
-    latest.endedAt = this.now()
+    latest.endedAt = latest.endedAt ?? this.now()
     latest.recoveredAfterRestart = true
     latest.changedFiles = await this.collectChangedFiles(latest)
+    if (this.get(runId).status === 'cancelled') latest.status = 'cancelled' // cancelled while the changes were being collected
+    latest.finalized = true
+    latest.serverPid = process.pid
     if (latest.autoCommit) { latest.autoCommit = false; latest.autoCommitSkipped = 'the server restarted during the run, so the end of the run was not verified' }
     this.save(latest)
     try { await this.onFinished(latest) } catch { /* ignore */ }
@@ -199,6 +249,7 @@ export class RunManager {
       ...meta,
       schemaVersion: 1,
       id: makeId('run'),
+      serverPid: process.pid,
       sessionId: session.id,
       agent,
       requestedAgent,
@@ -281,6 +332,9 @@ export class RunManager {
         latest.fallbackFrom='claude';latest.fallbackReason=`Claude exited with code ${code} before changing files`;latest.status='running';latest.agent='codex';latest.endedAt=null;this.save(latest);Object.assign(run,latest);append(Buffer.from('\n[Local Self Review] Claude 실행 실패 — 로컬 Codex로 전환합니다.\n'));await launch('codex');return
       }
       logStream.end()
+      // A process that took this run over after we seemed to be gone may already have finished it.
+      if(!this.claimFinish(run.id)){this.children.delete(run.id);return}
+      latest.finalized=true
       if(latest.autoCommit&&latest.status==='succeeded'){latest.fingerprintsAfter=fingerprintPaths(latest.cwd,latest.changedFiles);latest.committing=true}
       this.save(latest)
       try { await this.onFinished(latest) } catch { /* ignore */ }

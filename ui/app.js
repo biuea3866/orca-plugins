@@ -730,7 +730,7 @@ async function renderSession(sessionId) {
     }).join('')
     const canRun = Boolean(session.repoPath) && runnable > 0 && agentAvailable && !(activeRun && (activeRun.committing || activeRun.status === 'running' || activeRun.status === 'queued'))
     const canAnswer = Boolean(session.repoPath) && awaiting > 0 && agentAvailable && !(activeRun && (activeRun.committing || activeRun.status === 'running' || activeRun.status === 'queued'))
-    const reason = !session.repoPath ? '로컬 worktree가 없어 AI 수정을 실행할 수 없습니다' : !agentAvailable ? `${session.agent} CLI를 찾을 수 없습니다` : runnable === 0 ? '실행할 새 수정 요청이 없습니다. 코드 위치가 바뀐 미처리 스레드는 현재 코드에서 다시 선택해 주세요.' : activeRun && (activeRun.committing || activeRun.status === 'running' || activeRun.status === 'queued') ? '실행 중' : ''
+    const reason = !session.repoPath ? '로컬 worktree가 없어 AI 수정을 실행할 수 없습니다' : !agentAvailable ? `${session.agent} CLI를 찾을 수 없습니다` : runnable === 0 ? '실행할 새 수정 요청이 없습니다. 열린 스레드의 코멘트가 모두 처리됐거나 해결 처리된 상태입니다.' : activeRun && (activeRun.committing || activeRun.status === 'running' || activeRun.status === 'queued') ? '실행 중' : ''
     headEl.innerHTML = h`
       <div>
         <div class="title">${session.repoDisplayName} <span class="mono">${context?.branch ?? session.branch}</span> ${session.kind === 'pr' ? raw(h`<a class="badge" href="#/prs/${encodeURIComponent(session.pr.owner)}/${encodeURIComponent(session.pr.repo)}/${session.pr.number}">PR #${session.pr.number}</a>`) : ''}</div>

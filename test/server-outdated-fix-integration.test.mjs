@@ -69,6 +69,10 @@ test('a comment whose code moved before any fix completed is still sent to the A
   assert.match(prompt, /코드 위치 변경됨/)
   assert.match(prompt, /이미 반영/, 'an already satisfied request is reported, not applied twice')
   assert.match(prompt, /이번 수정 요청.*rename b to total/)
+  assert.match(prompt, /수행 — 이미 반영됨/, 'an already satisfied request is reported as handled, so it does not stay pending')
+  const again = await api('POST', `/api/sessions/${session.id}/runs`, { revision: after.revision, agent: 'claude', mode: 'fix' })
+  assert.equal(again.status, 400, 'once reported as handled the comment is not sent again')
+  assert.equal(again.body.error.code, 'no_runnable_threads')
 })
 
 test('the answer to an AI question on a thread whose code changed is not dropped either', async () => {
@@ -114,6 +118,9 @@ test('a run orphaned by a server restart still replies under the comment and mar
   const second = await boot()
   request = call(second)
   try {
+    // the takeover runs after the server is up, without holding the start-up back
+    for (let attempt = 0; attempt < 100; attempt += 1) { if ((await request('GET', `/api/runs/${runId}`)).body.run.status !== 'running') break; await new Promise((resolve) => setTimeout(resolve, 50)) }
+    for (let attempt = 0; attempt < 100; attempt += 1) { if ((await request('GET', `/api/sessions/${session.id}`)).body.session.threads[0].comments.some((entry) => entry.kind === 'fix-result')) break; await new Promise((resolve) => setTimeout(resolve, 50)) }
     const record = (await request('GET', `/api/runs/${runId}`)).body.run
     assert.equal(record.status, 'succeeded')
     assert.deepEqual(record.changedFiles, ['a.js'])

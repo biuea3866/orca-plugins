@@ -952,9 +952,6 @@ export function createServer({
         store.save(session)
       }
     }
-    // Agents the previous server process started keep running without us: finish what they left, or watch them until they exit.
-    await runs.adoptOrphans()
-    if (runs.hasRunning()) ensureRunPolling()
     // Restore historical results from recorded reports, without rerunning the AI or touching code.
     for (const run of runs.list()) {
       if (run.mode !== 'answer' && !['running', 'queued'].includes(run.status) && run.requestedComments?.length && !run.fixResultsApplied) applyFixResults(run)
@@ -976,6 +973,9 @@ export function createServer({
     port = httpServer.address().port
     writeRuntimeFile()
     scheduleIdleCheck()
+    // Agents the previous server process started keep running without us: finish what they left, or watch them until they
+    // exit. Done once the server is up, so a slow git call cannot hold the start back past the launcher's health wait.
+    runs.adoptOrphans().then(() => { if (runs.hasRunning()) ensureRunPolling(); publishPanel('run-adopted') }).catch((error) => process.stderr.write(`orphaned runs could not be adopted: ${error.message}\n`))
     await publisher.flush('start')
     if (runs.hasRunning()) ensureRunPolling()
     scheduleBridgeMaintenance()
@@ -989,6 +989,7 @@ export function createServer({
     if (runPollTimer) clearInterval(runPollTimer)
     if (bridgeTimer) clearInterval(bridgeTimer)
     if (staleTimer) clearInterval(staleTimer)
+    runs.stopWatching()
     removeRuntimeFile()
     if (!httpServer) return
     await new Promise((resolveClose) => { httpServer.closeAllConnections?.(); httpServer.close(() => resolveClose()) })
