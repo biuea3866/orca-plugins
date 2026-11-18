@@ -730,7 +730,7 @@ async function renderSession(sessionId) {
     }).join('')
     const canRun = Boolean(session.repoPath) && runnable > 0 && agentAvailable && !(activeRun && (activeRun.committing || activeRun.status === 'running' || activeRun.status === 'queued'))
     const canAnswer = Boolean(session.repoPath) && awaiting > 0 && agentAvailable && !(activeRun && (activeRun.committing || activeRun.status === 'running' || activeRun.status === 'queued'))
-    const reason = !session.repoPath ? '로컬 worktree가 없어 AI 수정을 실행할 수 없습니다' : !agentAvailable ? `${session.agent} CLI를 찾을 수 없습니다` : runnable === 0 ? '실행할 새 수정 요청이 없습니다. 코드 위치가 바뀐 미처리 스레드는 현재 코드에서 다시 선택해 주세요.' : activeRun && (activeRun.committing || activeRun.status === 'running' || activeRun.status === 'queued') ? '실행 중' : ''
+    const reason = !session.repoPath ? '로컬 worktree가 없어 AI 수정을 실행할 수 없습니다' : !agentAvailable ? `${session.agent} CLI를 찾을 수 없습니다` : runnable === 0 ? '실행할 새 수정 요청이 없습니다. 열린 스레드의 코멘트가 모두 처리됐거나 해결 처리된 상태입니다.' : activeRun && (activeRun.committing || activeRun.status === 'running' || activeRun.status === 'queued') ? '실행 중' : ''
     headEl.innerHTML = h`
       <div>
         <div class="title">${session.repoDisplayName} <span class="mono">${context?.branch ?? session.branch}</span> ${session.kind === 'pr' ? raw(h`<a class="badge" href="#/prs/${encodeURIComponent(session.pr.owner)}/${encodeURIComponent(session.pr.repo)}/${session.pr.number}">PR #${session.pr.number}</a>`) : ''}</div>
@@ -779,7 +779,7 @@ async function renderSession(sessionId) {
       await trackRun(run.id)
       await mutate(async () => (await api.get(`/api/sessions/${session.id}`)).session)
     } catch (error) {
-      if(error instanceof ApiRequestError && error.code === 'no_runnable_threads'){await reloadThreadsOnly();showNotice(mode === 'answer'?'답변을 기다리는 열린 질문이 없습니다. 기존 답변 아래에 새 코멘트를 남기면 다시 요청할 수 있습니다.':'현재 코드와 일치하는 열린 코멘트가 없습니다. diff를 새로고침하고 코멘트 위치를 확인해 주세요.');return}
+      if(error instanceof ApiRequestError && error.code === 'no_runnable_threads'){await reloadThreadsOnly();showNotice(mode === 'answer'?'답변을 기다리는 열린 질문이 없습니다. 기존 답변 아래에 새 코멘트를 남기면 다시 요청할 수 있습니다.':'AI에게 보낼 코멘트가 없습니다. 열린 스레드의 코멘트가 모두 처리됐거나 스레드가 해결 처리된 상태입니다. 새 코멘트를 남기거나 스레드를 다시 열어 주세요.');return}
       if (error instanceof ApiRequestError && error.status === 409 && error.extra?.runId) { showNotice('이미 실행 중인 작업이 있어 그 작업을 표시합니다.'); await trackRun(error.extra.runId); return }
       if (error instanceof ApiRequestError && error.status === 409) { await reload({ silent: true }); showNotice('세션이 변경되어 다시 불러왔습니다. 다시 시도하세요.', { error: true }); return }
       showNotice(describeError(error), { error: true })

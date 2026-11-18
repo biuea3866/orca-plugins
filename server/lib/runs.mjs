@@ -3,7 +3,7 @@
 
 import {StringDecoder} from 'node:string_decoder'
 import { spawn } from 'node:child_process'
-import { createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, statSync, openSync, readSync, closeSync, writeFileSync } from 'node:fs'
+import { createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, statSync, openSync, readSync, closeSync, writeFileSync, rmSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { join, resolve } from 'node:path'
 import { ApiError, makeId, writeJsonAtomic } from './store.mjs'
@@ -73,7 +73,10 @@ export function pickRunToShow(runs) {
 }
 
 export class RunManager {
-  constructor({ homeDir, agentCommands, git, now = () => new Date().toISOString(), onFinished = () => {}, onOutput = () => {}, ignoreChangedPaths = [] }) {
+  constructor({ homeDir, agentCommands, git, now = () => new Date().toISOString(), onFinished = () => {}, onOutput = () => {}, ignoreChangedPaths = [], orphanPollMs = 1000, claimStaleMs = 10 * 60_000 }) {
+    this.orphanPollMs = orphanPollMs
+    this.claimStaleMs = claimStaleMs
+    this.watchers = new Map()
     this.ignoreChangedPaths = ignoreChangedPaths
     this.runsDir = join(homeDir, 'runs')
     this.agentCommands = agentCommands
@@ -131,12 +134,159 @@ export class RunManager {
   recover() {
     for (const run of this.list()) {
       if(run.committing){run.committing=false;run.commitError={message:'Server stopped during commit. Inspect Git history before retrying.'};this.save(run)}
-      if ((run.status === 'running' || run.status === 'queued') && !pidAlive(run.pid)) {
-        run.status = 'interrupted'
-        run.endedAt = this.now()
-        this.save(run)
+    }
+  }
+
+  /**
+   * Runs the previous server process started: the agent is detached, so it keeps working after the server goes away
+   * (update, crash, idle exit), but the handle that records its end is gone. Without this the run stays `running`
+   * forever while the agent edits files, no reply is posted and the comment looks ignored.
+   * An agent that is gone is finished now; one still alive is watched and finished when it exits.
+   * A run another live server process still owns is left to that process.
+   */
+  async adoptOrphans() {
+    for (const run of this.list()) {
+      try {
+        if (!this.needsFinish(run) || this.children.has(run.id) || this.watchers.has(run.id) || this.ownedByOtherServer(run)) continue
+        const cancelledUnfinished = run.status === 'cancelled'
+        if (!cancelledUnfinished && pidAlive(run.pid)) { this.watch(run); continue }
+        await this.finishOrphan(run.id)
+      } catch { /* one broken record must not keep the server from starting */ }
+    }
+  }
+
+  /** Still `running`/`queued`, or cancelled by a version that records who finished it but never finished. */
+  needsFinish(run) {
+    if (run.status === 'running' || run.status === 'queued') return true
+    return run.status === 'cancelled' && Boolean(run.serverPid) && !run.finalized
+  }
+
+  ownedByOtherServer(run) {
+    return Boolean(run.serverPid) && run.serverPid !== process.pid && pidAlive(run.serverPid)
+  }
+
+  claimPath(runId) { return join(this.runDir(runId), 'finish.claim') }
+
+  /**
+   * Whoever creates the claim file finishes the run; any other process that gets here later does nothing.
+   * The claim records its owner: one left by a process that died before saving (or that is older than any finish can
+   * take) is abandoned and is taken over, otherwise the run would stay `running` forever.
+   */
+  claimFinish(runId) {
+    const path = this.claimPath(runId)
+    const create = () => { const fd = openSync(path, 'wx'); try { writeFileSync(fd, JSON.stringify({ pid: process.pid, at: Date.now() })) } finally { closeSync(fd) } }
+    try { create(); return true } catch (error) { if (error.code !== 'EEXIST') return true }
+    const seen = this.readClaim(path)
+    if (!seen || !this.claimIsStale(seen)) return false
+    // Only one process at a time may clear a stale claim: moving a claim aside to look at it could take a live
+    // claim another stealer had just made. The one holding the steal lock re-checks that the file is still the one
+    // judged stale, removes it and creates its own; anyone else gives way (create() is exclusive, so a claim made in
+    // between by someone else simply wins).
+    const lock = `${path}.steal`
+    if (!this.takeStealLock(lock)) return false
+    try {
+      const current = this.readClaim(path)
+      if (!current || current.ino !== seen.ino || current.raw !== seen.raw) return false
+      rmSync(path, { force: true })
+      try { create(); return true } catch (error) { return error.code !== 'EEXIST' }
+    } finally {
+      rmSync(lock, { force: true })
+    }
+  }
+
+  /** A steal lock is held for a moment; one left by a dead process (or an hour-old hang) is cleared once and retried. */
+  takeStealLock(lock) {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const fd = openSync(lock, 'wx')
+        try { writeFileSync(fd, JSON.stringify({ pid: process.pid, at: Date.now() })) } finally { closeSync(fd) }
+        return true
+      } catch (error) {
+        if (error.code !== 'EEXIST') return false
+        const held = this.readClaim(lock)
+        const abandoned = !held || Date.now() - held.writtenAt > 30_000 || (Boolean(held.owner?.pid) && !pidAlive(held.owner.pid))
+        if (!abandoned) return false
+        rmSync(lock, { force: true })
       }
     }
+    return false
+  }
+
+  readClaim(path) {
+    try {
+      const stat = statSync(path)
+      const raw = readFileSync(path, 'utf8')
+      let owner = null
+      try { owner = JSON.parse(raw) } catch { /* no readable owner: judged by age only */ }
+      return { raw, owner, ino: stat.ino, writtenAt: owner?.at ?? stat.mtimeMs }
+    } catch { return null }
+  }
+
+  claimIsStale(claim) {
+    if (Date.now() - claim.writtenAt > this.claimStaleMs) return true
+    return Boolean(claim.owner?.pid) && !pidAlive(claim.owner.pid)
+  }
+
+  releaseClaim(runId) {
+    try { rmSync(this.claimPath(runId), { force: true }) } catch { /* nothing to release */ }
+  }
+
+  watch(run) {
+    const latest = this.get(run.id)
+    latest.serverPid = process.pid // this process answers for the run from now on
+    this.save(latest)
+    const timer = setInterval(() => {
+      let current
+      try { current = this.get(run.id) } catch { clearInterval(timer); this.watchers.delete(run.id); return }
+      if (!this.needsFinish(current)) { clearInterval(timer); this.watchers.delete(run.id); return }
+      if (pidAlive(current.pid)) return // a fallback agent may have replaced the one first seen
+      clearInterval(timer); this.watchers.delete(run.id)
+      this.finishOrphan(run.id).catch(() => {})
+    }, this.orphanPollMs)
+    timer.unref?.()
+    this.watchers.set(run.id, timer)
+  }
+
+  stopWatching() {
+    for (const timer of this.watchers.values()) clearInterval(timer)
+    this.watchers.clear()
+  }
+
+  /** The agent is gone; the exit code is not known, so a completion report in the log is what tells a finished run from a cut-off one. */
+  isComplete(run, log) {
+    const nonce = String(run.nonce || '').replace(/[^a-zA-Z0-9]/g, '')
+    const ids = run.threadIds ?? []
+    if (!ids.length) return false // a repair run has no thread report to verify
+    if (run.mode === 'answer') {
+      const ends = log.split(`@@END:${nonce}@@`).length - 1
+      return Boolean(nonce) && ids.every((id) => log.includes(`@@ANSWER:${id}:${nonce}@@`)) && ends >= ids.length
+    }
+    return ids.every((id) => new RegExp(`^-\\s+${id}:\\s*(?:수행|미수행)`, 'mu').test(log))
+  }
+
+  async finishOrphan(runId) {
+    let latest = this.get(runId)
+    if (!this.needsFinish(latest) || this.ownedByOtherServer(latest)) return
+    if (latest.status !== 'cancelled' && pidAlive(latest.pid)) return // still being worked on (a fallback agent, or a slow exit)
+    if (!this.claimFinish(runId)) return // another process is finishing it
+    try {
+      latest = this.get(runId)
+      const cancelled = latest.status === 'cancelled'
+      latest.status = cancelled ? 'cancelled' : this.isComplete(latest, this.readLog(runId, 0).log) ? 'succeeded' : 'interrupted'
+      latest.exitCode = null
+      latest.endedAt = latest.endedAt ?? this.now()
+      latest.recoveredAfterRestart = true
+      latest.changedFiles = await this.collectChangedFiles(latest)
+      if (this.get(runId).status === 'cancelled') latest.status = 'cancelled' // cancelled while the changes were being collected
+      latest.finalized = true
+      latest.serverPid = process.pid
+      if (latest.autoCommit) { latest.autoCommit = false; latest.autoCommitSkipped = 'the server restarted during the run, so the end of the run was not verified' }
+      this.save(latest)
+    } catch (error) {
+      this.releaseClaim(runId) // nothing was recorded: a later start may try again
+      throw error
+    }
+    try { await this.onFinished(latest) } catch { /* ignore */ }
   }
 
   runningFor(cwd) {
@@ -165,6 +315,7 @@ export class RunManager {
       ...meta,
       schemaVersion: 1,
       id: makeId('run'),
+      serverPid: process.pid,
       sessionId: session.id,
       agent,
       requestedAgent,
@@ -247,6 +398,9 @@ export class RunManager {
         latest.fallbackFrom='claude';latest.fallbackReason=`Claude exited with code ${code} before changing files`;latest.status='running';latest.agent='codex';latest.endedAt=null;this.save(latest);Object.assign(run,latest);append(Buffer.from('\n[Local Self Review] Claude 실행 실패 — 로컬 Codex로 전환합니다.\n'));await launch('codex');return
       }
       logStream.end()
+      // A process that took this run over after we seemed to be gone may already have finished it.
+      if(!this.claimFinish(run.id)){this.children.delete(run.id);return}
+      latest.finalized=true
       if(latest.autoCommit&&latest.status==='succeeded'){latest.fingerprintsAfter=fingerprintPaths(latest.cwd,latest.changedFiles);latest.committing=true}
       this.save(latest)
       try { await this.onFinished(latest) } catch { /* ignore */ }

@@ -14,14 +14,13 @@ export function placeThreads(threads) {
   return placement
 }
 
+// An open thread is sent to the AI while any user comment on it is still waiting (never completed). That includes
+// threads whose code moved (an earlier AI edit, the user's own edit, a new commit): the request did not go away, and
+// the prompt tells the agent to look for the current implementation, or to ask, instead of trusting the old lines.
+// Dropping those silently left the user's comment unanswered with nothing on screen to explain it.
 export function isFixRunnable(thread) {
   if (thread.status !== 'open') return false
-  const pending = comment => comment.author !== 'ai' && !comment.fixCompletedAt
-  if (thread.applicability === 'current') return thread.comments.some(pending)
-  // A fresh follow-up after a completed request applies to the current implementation,
-  // even when the previous fix moved or removed the original anchor.
-  return thread.applicability === 'outdated' && thread.comments.some((comment, index) =>
-    pending(comment) && thread.comments.slice(0, index).some(previous => previous.author !== 'ai' && previous.fixCompletedAt))
+  return thread.comments.some(comment => comment.author !== 'ai' && !comment.fixCompletedAt)
 }
 
 export function countRunnable(threads) {

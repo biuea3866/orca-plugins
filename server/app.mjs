@@ -478,7 +478,7 @@ export function createServer({
     annotateThreads(diff.files, session.threads)
     let threads = mode === 'answer' ? selectAnswerableThreads(session.threads) : selectRunnableThreads(session.threads)
     if(body.threadIds!==undefined){if(mode!=='answer'||!Array.isArray(body.threadIds)||!body.threadIds.length||body.threadIds.some(id=>typeof id!=='string'||!session.threads.some(t=>t.id===id)))throw new ApiError(400,'invalid_field','Choose existing review threads for an answer');const requested=new Set(body.threadIds);threads=threads.filter(t=>requested.has(t.id))}
-    if (threads.length === 0) throw new ApiError(400, 'no_runnable_threads', mode === 'answer' ? 'no open questions waiting for an answer; add a follow-up comment to request another reply' : 'no open, up-to-date threads to send to the agent')
+    if (threads.length === 0) throw new ApiError(400, 'no_runnable_threads', mode === 'answer' ? 'no open questions waiting for an answer; add a follow-up comment to request another reply' : 'no open thread has a comment waiting for the AI; every comment was already handled or the threads are resolved')
     const nonce = newNonce()
     const publication = await publicationState({exec,cwd:session.repoPath,branch:session.branch,gitBinary:resolveBin('git') ?? 'git',now})
     let prompt
@@ -973,6 +973,9 @@ export function createServer({
     port = httpServer.address().port
     writeRuntimeFile()
     scheduleIdleCheck()
+    // Agents the previous server process started keep running without us: finish what they left, or watch them until they
+    // exit. Done once the server is up, so a slow git call cannot hold the start back past the launcher's health wait.
+    runs.adoptOrphans().then(() => { if (runs.hasRunning()) ensureRunPolling(); publishPanel('run-adopted') }).catch((error) => process.stderr.write(`orphaned runs could not be adopted: ${error.message}\n`))
     await publisher.flush('start')
     if (runs.hasRunning()) ensureRunPolling()
     scheduleBridgeMaintenance()
@@ -986,6 +989,7 @@ export function createServer({
     if (runPollTimer) clearInterval(runPollTimer)
     if (bridgeTimer) clearInterval(bridgeTimer)
     if (staleTimer) clearInterval(staleTimer)
+    runs.stopWatching()
     removeRuntimeFile()
     if (!httpServer) return
     await new Promise((resolveClose) => { httpServer.closeAllConnections?.(); httpServer.close(() => resolveClose()) })

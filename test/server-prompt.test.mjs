@@ -12,8 +12,8 @@ const session = {
   ]
 }
 
-test('selectRunnableThreads keeps only open + current threads', () => {
-  assert.deepEqual(selectRunnableThreads(session.threads).map((thread) => thread.id), ['thr_1', 'thr_2'])
+test('selectRunnableThreads keeps open threads with a waiting comment, including ones whose code moved', () => {
+  assert.deepEqual(selectRunnableThreads(session.threads).map((thread) => thread.id), ['thr_1', 'thr_2', 'thr_4'])
 })
 
 test('buildPrompt includes header, prohibitions, every thread block with context and all comments verbatim', () => {

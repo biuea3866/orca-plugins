@@ -129,12 +129,11 @@ test('an unknown run mode is rejected', async () => {
   assert.equal(bad.status, 400)
 })
 
-test('a follow-up on a removed diff line receives an inline answer while edit execution remains blocked',async()=>{
+test('a follow-up on a removed diff line receives an inline answer without editing anything',async()=>{
  const before=readFileSync(join(repo,'a.js'),'utf8');writeFileSync(join(repo,'a.js'),'const a = 1\n');
  await api('PATCH',`/api/sessions/${sessionId}`,{revision:(await session()).revision,includeWorkingTree:true});
  await api('POST',`/api/sessions/${sessionId}/threads/${threadId}/comments`,{revision:(await session()).revision,body:'삭제된 코드에 대해서도 설명해 주세요'});
  const current=await session();assert.equal(current.threads[0].applicability,'outdated');const count=current.threads[0].comments.length;
- const fix=await api('POST',`/api/sessions/${sessionId}/runs`,{revision:current.revision,mode:'fix'});assert.equal(fix.status,400);assert.equal(fix.body.error.code,'no_runnable_threads');
  const answer=await api('POST',`/api/sessions/${sessionId}/runs`,{revision:(await session()).revision,agent:'claude',mode:'answer'});assert.equal(answer.status,202);
  const done=await waitFor(async()=>{const s=await session();return s.threads[0].comments.length===count+1?s:null});assert.ok(done);assert.equal(done.threads[0].comments.at(-1).author,'ai');assert.match(readFileSync(promptOut,'utf8'),/과거 스냅샷/);assert.equal(readFileSync(join(repo,'a.js'),'utf8'),'const a = 1\n');writeFileSync(join(repo,'a.js'),before);
 });
