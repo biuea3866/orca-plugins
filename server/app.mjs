@@ -952,6 +952,9 @@ export function createServer({
         store.save(session)
       }
     }
+    // Agents the previous server process started keep running without us: finish what they left, or watch them until they exit.
+    await runs.adoptOrphans()
+    if (runs.hasRunning()) ensureRunPolling()
     // Restore historical results from recorded reports, without rerunning the AI or touching code.
     for (const run of runs.list()) {
       if (run.mode !== 'answer' && !['running', 'queued'].includes(run.status) && run.requestedComments?.length && !run.fixResultsApplied) applyFixResults(run)

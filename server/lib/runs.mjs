@@ -73,7 +73,9 @@ export function pickRunToShow(runs) {
 }
 
 export class RunManager {
-  constructor({ homeDir, agentCommands, git, now = () => new Date().toISOString(), onFinished = () => {}, onOutput = () => {}, ignoreChangedPaths = [] }) {
+  constructor({ homeDir, agentCommands, git, now = () => new Date().toISOString(), onFinished = () => {}, onOutput = () => {}, ignoreChangedPaths = [], orphanPollMs = 1000 }) {
+    this.orphanPollMs = orphanPollMs
+    this.watchers = new Map()
     this.ignoreChangedPaths = ignoreChangedPaths
     this.runsDir = join(homeDir, 'runs')
     this.agentCommands = agentCommands
@@ -131,12 +133,44 @@ export class RunManager {
   recover() {
     for (const run of this.list()) {
       if(run.committing){run.committing=false;run.commitError={message:'Server stopped during commit. Inspect Git history before retrying.'};this.save(run)}
-      if ((run.status === 'running' || run.status === 'queued') && !pidAlive(run.pid)) {
-        run.status = 'interrupted'
-        run.endedAt = this.now()
-        this.save(run)
-      }
     }
+  }
+
+  /**
+   * Runs the previous server process started: the agent is detached, so it keeps working after the server goes away
+   * (update, crash, idle exit), but the handle that records its end is gone. Without this the run stays `running`
+   * forever while the agent edits files, no reply is posted and the comment looks ignored.
+   * An agent that is gone is finished now; one still alive is watched and finished when it exits.
+   */
+  async adoptOrphans() {
+    for (const run of this.list()) {
+      if (run.status !== 'running' && run.status !== 'queued') continue
+      if (this.children.has(run.id) || this.watchers.has(run.id)) continue
+      if (!pidAlive(run.pid)) { await this.finishOrphan(run.id); continue }
+      const timer = setInterval(() => {
+        if (pidAlive(run.pid)) return
+        clearInterval(timer); this.watchers.delete(run.id)
+        this.finishOrphan(run.id).catch(() => {})
+      }, this.orphanPollMs)
+      timer.unref?.()
+      this.watchers.set(run.id, timer)
+    }
+  }
+
+  async finishOrphan(runId) {
+    const latest = this.get(runId)
+    if (latest.status !== 'running' && latest.status !== 'queued') return // finished or cancelled in the meantime
+    const log = this.readLog(runId, 0).log
+    // The exit code died with the old process. A completion report in the log is what tells a finished run from a cut-off one.
+    const reported = /^-\s+thr_[0-9a-f]{12}:\s*(?:수행|미수행)/mu.test(log) || /@@END:[A-Za-z0-9]+@@/u.test(log)
+    latest.status = reported ? 'succeeded' : 'interrupted'
+    latest.exitCode = null
+    latest.endedAt = this.now()
+    latest.recoveredAfterRestart = true
+    latest.changedFiles = await this.collectChangedFiles(latest)
+    if (latest.autoCommit) { latest.autoCommit = false; latest.autoCommitSkipped = 'the server restarted during the run, so the end of the run was not verified' }
+    this.save(latest)
+    try { await this.onFinished(latest) } catch { /* ignore */ }
   }
 
   runningFor(cwd) {

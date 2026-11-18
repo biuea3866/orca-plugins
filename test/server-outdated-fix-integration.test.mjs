@@ -89,3 +89,39 @@ test('the answer to an AI question on a thread whose code changed is not dropped
   assert.ok(record.requestedComments.some((request) => request.body === 'call it LIMIT'))
   await finished(started.body.id)
 })
+
+test('a run orphaned by a server restart still replies under the comment and marks it completed', async () => {
+  // a fresh server over the same data: the previous process died while the agent was running
+  const dirRepo = realpathSync(mkdtempSync(join(tmpdir(), 'sr-orph-repo-')))
+  git(dirRepo, 'init', '-q', '-b', 'main'); writeFileSync(join(dirRepo, 'a.js'), 'const a = 1\n'); git(dirRepo, 'add', '.'); git(dirRepo, 'commit', '-q', '-m', 'base')
+  git(dirRepo, 'checkout', '-q', '-b', 'feat/orph'); writeFileSync(join(dirRepo, 'a.js'), 'const a = 1\nconst b = 2\n'); git(dirRepo, 'commit', '-q', '-am', 'add b')
+  const dirHome = mkdtempSync(join(tmpdir(), 'sr-orph-home-'))
+  const boot = async () => { const s = createServer({ homeDir: dirHome, pluginRoot, runners, agentCommands, preferredPort: 0, idleMs: 0, exitImpl: () => {}, bridgeMaintenanceMs: 0, panelDebounceMs: 0 }); await s.listen(); return s }
+  const first = await boot()
+  const call = (s) => async (method, path, body) => { const r = await fetch(`http://127.0.0.1:${s.port}${path}`, { method, headers: { 'X-SR-Token': s.token, 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) }); return { status: r.status, body: await r.json().catch(() => null) } }
+  let request = call(first)
+  let session = (await request('POST', '/api/sessions', { kind: 'local', repoPath: dirRepo, baseRef: 'main' })).body
+  session = (await request('POST', `/api/sessions/${session.id}/threads`, { revision: session.revision, path: 'a.js', side: 'new', startLine: 2, endLine: 2, selectedText: 'const b = 2', body: 'rename b' })).body
+  const thread = session.threads[0], comment = thread.comments[0]
+  await first.close()
+  // what the dead process left: a run record that still says `running`, the agent's report in its log, and the edit
+  const runId = 'run_0a0b0c0d0e0f', dir = join(dirHome, 'runs', runId)
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, 'meta.json'), JSON.stringify({ schemaVersion: 1, id: runId, sessionId: session.id, agent: 'claude', mode: 'fix', nonce: 'zz11', threadIds: [thread.id], requestedComments: [{ threadId: thread.id, commentId: comment.id, body: comment.body, updatedAt: comment.updatedAt }], cwd: dirRepo, pid: 2_000_000_000, status: 'running', exitCode: null, startedAt: new Date().toISOString(), endedAt: null, changedFiles: [], fingerprintsBefore: {} }))
+  writeFileSync(join(dir, 'output.log'), `@@FIX:${comment.id}:zz11@@\n이름을 total 로 바꿨습니다\n@@END:zz11@@\n- ${thread.id}: 수행 — renamed\n`)
+  writeFileSync(join(dirRepo, 'a.js'), 'const a = 1\nconst total = 2\n')
+
+  const second = await boot()
+  request = call(second)
+  try {
+    const record = (await request('GET', `/api/runs/${runId}`)).body.run
+    assert.equal(record.status, 'succeeded')
+    assert.deepEqual(record.changedFiles, ['a.js'])
+    const after = (await request('GET', `/api/sessions/${session.id}`)).body.session
+    const reply = after.threads[0].comments.find((entry) => entry.kind === 'fix-result')
+    assert.ok(reply, 'the reply that was lost with the old process is posted')
+    assert.match(reply.body, /total/)
+    assert.equal(reply.replyToCommentId, comment.id)
+    assert.ok(after.threads[0].comments[0].fixCompletedAt, 'the comment is marked completed, so it is not sent again')
+  } finally { await second.close() }
+})
