@@ -167,3 +167,50 @@ test('public panel worker bridge reads live inventory and refreshes data after a
   assert.equal(after.sessions[sessionId].session.repoPath, repo)
   assert.equal(JSON.stringify(after).includes(server.token), false, 'server credentials stay in the worker')
 })
+
+test('bridge maintenance never creates terminals for worktrees Orca does not know (GitGraph temp review worktrees)', async () => {
+  const known = realpathSync(mkdtempSync(join(tmpdir(), 'sr-known-'))), temp = realpathSync(mkdtempSync(join(tmpdir(), 'sr-temp-')))
+  for (const dir of [known, temp]) { execFileSync('git', ['init', '-q', '-b', 'main', dir]); execFileSync('git', ['-C', dir, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init']) }
+  const created = []
+  const orcaRunners = { exec: async (command, args, options) => {
+    if (command.endsWith('git')) return execCommand(command, args, options)
+    if (args[0] === 'repo') return { stdout: JSON.stringify({ ok: true, result: { repos: [{ id: 'r9', path: known, displayName: 'known', gitRemoteIdentity: null }] } }), stderr: '', code: 0 }
+    if (args[0] === 'worktree') return { stdout: JSON.stringify({ ok: true, result: { worktrees: [{ id: `r9::${known}`, repoId: 'r9', path: known, branch: 'refs/heads/main', displayName: 'main' }] } }), stderr: '', code: 0 }
+    if (args[0] === 'terminal' && args[1] === 'list') return { stdout: JSON.stringify({ ok: true, result: { terminals: [] } }), stderr: '', code: 0 }
+    if (args[0] === 'terminal' && args[1] === 'create') { created.push(args[args.indexOf('--worktree') + 1]); return { stdout: JSON.stringify({ ok: true, result: { terminal: { handle: 'term_x' } } }), stderr: '', code: 0 } }
+    return { stdout: '', stderr: 'unexpected', code: 1 }
+  } }
+  const maintained = createServer({ homeDir: mkdtempSync(join(tmpdir(), 'sr-mhome-')), pluginRoot, runners: orcaRunners, preferredPort: 0, idleMs: 0, exitImpl: () => {}, bridgeMaintenanceMs: 150, panelDebounceMs: 0 })
+  await maintained.listen()
+  try {
+    const call = (path, body) => fetch(`http://127.0.0.1:${maintained.port}${path}`, { method: 'POST', headers: { 'X-SR-Token': maintained.token, 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then((r) => r.status)
+    assert.equal(await call('/api/sessions', { kind: 'local', repoPath: temp, baseRef: 'main' }), 201)
+    assert.equal(await call('/api/sessions', { kind: 'local', repoPath: known, baseRef: 'main' }), 201)
+    await wait(900)
+    assert.ok(created.some((entry) => entry === `path:${known}`), `the Orca worktree still gets its bridge: ${created}`)
+    assert.ok(!created.some((entry) => entry === `path:${temp}`), `no bridge for the temp worktree: ${created}`)
+  } finally { await maintained.close() }
+})
+
+test('a running bridge is recognised when Orca lists the worktree through a symlinked path', async () => {
+  const real = realpathSync(mkdtempSync(join(tmpdir(), 'sr-link-real-'))), linkRoot = realpathSync(mkdtempSync(join(tmpdir(), 'sr-link-'))), linked = join(linkRoot, 'wt')
+  execFileSync('git', ['init', '-q', '-b', 'main', real]); execFileSync('git', ['-C', real, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init'])
+  execFileSync('ln', ['-s', real, linked])
+  const created = []
+  const linkRunners = { exec: async (command, args, options) => {
+    if (command.endsWith('git')) return execCommand(command, args, options)
+    if (args[0] === 'repo') return { stdout: JSON.stringify({ ok: true, result: { repos: [{ id: 'rl', path: linked, displayName: 'linked', gitRemoteIdentity: null }] } }), stderr: '', code: 0 }
+    if (args[0] === 'worktree') return { stdout: JSON.stringify({ ok: true, result: { worktrees: [{ id: `rl::${linked}`, repoId: 'rl', path: linked, branch: 'refs/heads/main', displayName: 'main' }] } }), stderr: '', code: 0 }
+    if (args[0] === 'terminal' && args[1] === 'list') return { stdout: JSON.stringify({ ok: true, result: { terminals: [{ handle: 'term_l', ptyId: 'pty_l', worktreePath: linked, title: 'Self Review bridge' }] } }), stderr: '', code: 0 }
+    if (args[0] === 'terminal' && args[1] === 'create') { created.push(args); return { stdout: JSON.stringify({ ok: true, result: { terminal: { handle: 'term_x' } } }), stderr: '', code: 0 } }
+    return { stdout: '', stderr: 'unexpected', code: 1 }
+  } }
+  const linkedServer = createServer({ homeDir: mkdtempSync(join(tmpdir(), 'sr-lhome-')), pluginRoot, runners: linkRunners, preferredPort: 0, idleMs: 0, exitImpl: () => {}, bridgeMaintenanceMs: 150, panelDebounceMs: 0 })
+  await linkedServer.listen()
+  try {
+    const status = await fetch(`http://127.0.0.1:${linkedServer.port}/api/sessions`, { method: 'POST', headers: { 'X-SR-Token': linkedServer.token, 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: 'local', repoPath: linked, baseRef: 'main' }) }).then((r) => r.status)
+    assert.equal(status, 201)
+    await wait(900)
+    assert.deepEqual(created, [], 'the bridge listed under the Orca path is the running one')
+  } finally { await linkedServer.close() }
+})

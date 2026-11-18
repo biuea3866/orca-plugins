@@ -2,6 +2,7 @@ import {createHash} from 'node:crypto'
 import {ApiError} from './store.mjs'
 import {publishRun} from './publish.mjs'
 import {defaultCommitMessage,validateCommitMessage} from './commit-message.mjs'
+import {detachedPublishTarget} from './publish-target.mjs'
 
 export async function previewWorkingTree({exec,gitBinary='git',session}) {
  if(!session.repoPath)throw new ApiError(400,'worktree_missing','로컬 작업 트리가 없습니다.')
@@ -15,13 +16,15 @@ export async function previewWorkingTree({exec,gitBinary='git',session}) {
  const hashes=newPaths.length?await git(['hash-object','--no-filters','--',...newPaths]):''
  const snapshot=createHash('sha256').update(JSON.stringify({head,branch,tracked,untracked,diff,index,hashes})).digest('hex')
  const retryCommit=session.lastPublishError?.commit===head.trim()?head.trim():null
- return {branch:branch.trim(),head:head.trim(),paths:retryCommit?[]:paths,remainingPaths:retryCommit?paths:[],snapshot,retryCommit,message:defaultCommitMessage(branch.trim(),paths,retryCommit?session.lastPublishError.commitMessage:undefined)}
+ // Without a declared branch a detached preview still opens; publishing is refused later with detached_head.
+ const publishBranch=branch.trim()==='HEAD'?await detachedPublishTarget({exec,gitBinary,cwd:session.repoPath}).then(target=>target.branch,error=>{if(error?.code==='detached_head')return null;throw error}):branch.trim()
+ return {branch:branch.trim(),publishBranch,head:head.trim(),paths:retryCommit?[]:paths,remainingPaths:retryCommit?paths:[],snapshot,retryCommit,message:defaultCommitMessage(publishBranch??branch.trim(),paths,retryCommit?session.lastPublishError.commitMessage:undefined)}
 }
 
 export async function publishWorkingTree({exec,gitBinary='git',session,selection,checksOptions}) {
  const preview=await previewWorkingTree({exec,gitBinary,session})
  if(!selection?.snapshot||preview.snapshot!==selection.snapshot)throw new ApiError(409,'publication_changed','미커밋 변경이 달라졌습니다. 파일 목록과 메시지를 다시 확인하세요.')
- const message=validateCommitMessage(selection.message,session.branch)
+ const message=validateCommitMessage(selection.message,preview.publishBranch??session.branch)
  const paths=Array.isArray(selection.paths)?[...new Set(selection.paths)]:[]
  if(paths.some(path=>!preview.paths.includes(path)))throw new ApiError(400,'invalid_paths','현재 미커밋 파일만 선택할 수 있습니다.')
  if(!paths.length&&!preview.retryCommit)throw new ApiError(400,'nothing_to_commit','커밋할 파일을 선택하세요.')

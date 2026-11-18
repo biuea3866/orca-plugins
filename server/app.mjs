@@ -2,7 +2,7 @@
 
 import { createServer as createHttpServer } from 'node:http'
 import { randomBytes } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, unlinkSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, unlinkSync, realpathSync } from 'node:fs'
 import { extname, join, normalize, resolve, sep } from 'node:path'
 import { checkRequest } from './lib/auth.mjs'
 import { ApiError, SessionStore, summarizeSession, writeJsonAtomic } from './lib/store.mjs'
@@ -452,11 +452,19 @@ export function createServer({
 
   /** Makes sure every worktree with an active local session has a live bridge terminal. */
   async function maintainBridges({ worktreePath = null } = {}) {
-    const targets = worktreePath ? [worktreePath] : [...new Set(store.listSessions().filter((session) => session.kind === 'local' && session.status !== 'completed' && session.repoPath && existsSync(session.repoPath)).map((session) => session.repoPath))]
+    // Only worktrees Orca knows get a bridge terminal: the panel lives in Orca. A review hosted elsewhere (GitGraph's
+    // temporary branch-review worktrees) shows the UI itself and must never get a terminal opened for it.
+    const inventoryNow = await inventory().catch(() => null)
+    if (!inventoryNow) return
+    const canonical = (path) => { try { return realpathSync(path) } catch { return resolve(path) } }
+    // canonical path -> the path Orca uses, which is also what its terminal list reports
+    const orcaPaths = new Map([...inventoryNow.worktrees, ...inventoryNow.repos].map((entry) => [canonical(entry.path), entry.path]))
+    const candidates = worktreePath ? [worktreePath] : [...new Set(store.listSessions().filter((session) => session.kind === 'local' && session.status !== 'completed' && session.repoPath && existsSync(session.repoPath)).map((session) => session.repoPath))]
+    const targets = candidates.filter((path) => orcaPaths.has(canonical(path)))
     let changed = false
     for (const path of targets) {
       const registered = bridges[path]?.terminalIds ?? []
-      const result = await bridgeKeeper.ensure(path, registered)
+      const result = await bridgeKeeper.ensure(orcaPaths.get(canonical(path)) ?? path, registered)
       if (result.alive && registered.length && result.alive.length !== registered.length) {
         bridges[path] = { terminalIds: result.alive, registeredAt: now() }
         if (result.alive.length === 0) delete bridges[path]
@@ -793,7 +801,7 @@ export function createServer({
       if(segments[2]==='publish-preview' && segments.length===3 && method==='GET'){
         const session=store.getSession(sessionId),plan=await previewWorkingTree({exec,gitBinary:resolveBin('git')??'git',session})
         const suggestion=runs.list().filter(run=>run.cwd===session.repoPath && run.branch===session.branch && run.mode!=='answer' && run.commitMessage && run.changedFiles?.some(path=>plan.paths.includes(path))).sort((a,b)=>b.startedAt.localeCompare(a.startedAt))[0]?.commitMessage
-        if(!plan.retryCommit)plan.message=defaultCommitMessage(session.branch,plan.paths,suggestion)
+        if(!plan.retryCommit)plan.message=defaultCommitMessage(plan.publishBranch??session.branch,plan.paths,suggestion)
         plan.checks=planPublishChecks(session.repoPath,plan.retryCommit?session.lastPublishError.paths:plan.paths)
         return sendJson(response,200,plan)
       }
