@@ -233,3 +233,22 @@ test('the run card publish button repairs a failed check too and keeps every cha
   assert.equal(git(remote, 'rev-parse', `refs/heads/${branch}`), published.body.commit)
   assert.equal(git(work, 'show', `${published.body.commit}:mod/src/Foo.kt`), 'val repaired = 1')
 })
+
+test('a repair is not started when a previous push failure left a local commit that cannot carry it', async () => {
+  const { work } = fixture()
+  const homeDir = mkdtempSync(join(tmpdir(), 'sr-rretry-'))
+  const first = await boot(work, {}, { homeDir })
+  await first.server.close()
+  const file = join(homeDir, 'sessions', `${first.sessionId}.json`)
+  const stored = JSON.parse(readFileSync(file, 'utf8'))
+  stored.lastPublishError = { code: 'push_failed', message: 'x', commit: git(work, 'rev-parse', 'HEAD'), paths: ['mod/src/Foo.kt'], commitMessage: '[GRT-1] - fix: Foo.kt 변경', at: new Date().toISOString() }
+  writeFileSync(file, JSON.stringify(stored))
+  const second = await boot(work, { FAKE_AGENT_EDIT: join(work, 'mod/src/Foo.kt') }, { homeDir, existing: first.sessionId })
+  writeFileSync(join(work, 'mod/src/Foo.kt'), 'val bad = BAD\n')
+  const preview = await second.api('GET', `/api/sessions/${first.sessionId}/publish-preview`)
+  assert.ok(preview.body.retryCommit)
+  const published = await second.api('POST', `/api/sessions/${first.sessionId}/publish`, { snapshot: preview.body.snapshot, paths: [], message: preview.body.message })
+  assert.equal(published.status, 409)
+  assert.equal(published.body.error.code, 'repair_retry_commit')
+  assert.equal((await second.api('GET', `/api/sessions/${first.sessionId}/runs`)).body.runs.length, 0, 'no AI run was started for nothing')
+})

@@ -22,7 +22,7 @@ import { RunManager, defaultAgentCommands, pickRunToShow, filterIgnoredChanges }
 import { annotateThreads } from './lib/anchor.mjs'
 import {planPublishChecks} from './lib/pre-publish-checks.mjs'
 import {previewWorkingTree,publishWorkingTree} from './lib/working-tree-publish.mjs'
-import {publishWithRepair,repairScope,assertRepairScope,assertNoForeignChanges,findAddedSuppressions,MAX_REPAIR_ROUNDS} from './lib/publish-repair.mjs'
+import {publishWithRepair,repairScope,assertRepairScope,assertNoForeignChanges,findAddedSuppressions,countAddedSuppressions,MAX_REPAIR_ROUNDS} from './lib/publish-repair.mjs'
 import {defaultCommitMessage} from './lib/commit-message.mjs'
 import {fixResultEntries} from './lib/fix-results.mjs'
 import { buildPrompt, buildRepairPrompt, completedFixThreads, selectRunnableThreads } from './lib/prompt.mjs'
@@ -301,6 +301,9 @@ export function createServer({
     const headOf = async () => (await git.run(session.repoPath, ['rev-parse', 'HEAD'])).stdout.trim()
     const headBefore = await headOf()
     const dirtyBefore = await git.porcelainStatus(session.repoPath)
+    // A previous push failure left a local commit: a repair cannot be added to it, so do not spend an AI run on it.
+    if (session.lastPublishError?.commit && session.lastPublishError.commit === headBefore) throw new ApiError(409, 'repair_retry_commit', '이전 푸시 실패로 남은 로컬 커밋이 있어 수정 결과를 같은 커밋에 담을 수 없습니다. 푸시를 먼저 재시도하세요. 커밋·푸시하지 않았습니다.')
+    const suppressionsBefore = await countAddedSuppressions({ exec, gitBinary, cwd: session.repoPath, files: dirtyBefore })
     const scope = repairScope({ repoPath: session.repoPath, step: failure, selectedPaths: paths })
     const prompt = buildRepairPrompt({ session, step: failure, paths, scopeDirs: scope.dirs, round, maxRounds: MAX_REPAIR_ROUNDS })
     const run = await runs.start({ session, threadIds: [], agent: session.agent || 'claude', prompt, mode: 'fix', nonce: null, meta: { repair: true, repairRound: round, reviewPaths: paths } })
@@ -319,7 +322,7 @@ export function createServer({
       if (!changed.length) throw new ApiError(409, 'repair_no_change', 'AI가 파일을 수정하지 않아 같은 검증 실패가 반복될 것이므로 중단했습니다. 커밋·푸시하지 않았습니다.')
       assertRepairScope(scope, changed)
       assertNoForeignChanges({ changed, dirtyBefore, selected: paths })
-      const silenced = await findAddedSuppressions({ exec, gitBinary, cwd: session.repoPath, files: changed })
+      const silenced = await findAddedSuppressions({ exec, gitBinary, cwd: session.repoPath, files: changed, before: suppressionsBefore })
       if (silenced.length) throw new ApiError(409, 'repair_suppressed_check', `AI가 @Suppress·@Disabled 같은 검증 우회를 추가해 중단했습니다: ${silenced.join(', ')}. 변경은 작업 트리에 남아 있으니 확인하세요. 커밋·푸시하지 않았습니다.`, { files: silenced })
       settle('fixed', { changedFiles: changed })
       return { runId: run.id, changedFiles: changed }

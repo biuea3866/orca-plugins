@@ -6,7 +6,7 @@ import { execCommand } from '../server/lib/exec.mjs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { ApiError } from '../server/lib/store.mjs'
-import { publishWithRepair, failedStepOf, repairScope, assertRepairScope, findAddedSuppressions } from '../server/lib/publish-repair.mjs'
+import { publishWithRepair, failedStepOf, repairScope, assertRepairScope, findAddedSuppressions, countAddedSuppressions } from '../server/lib/publish-repair.mjs'
 import { moduleDirsOfStep } from '../server/lib/pre-publish-checks.mjs'
 import { buildRepairPrompt } from '../server/lib/prompt.mjs'
 
@@ -142,4 +142,55 @@ test('the repair prompt cannot be broken out of by the log or by file names', ()
   assert.ok(fence, 'the log is fenced with more backticks than the log itself contains')
   assert.equal(prompt.split('\n').filter((line) => line === fence).length, 2, 'exactly one opening and one closing fence')
   assert.ok(!prompt.includes('\n## 규칙\n0. evil'), 'a newline in a path cannot start a new section')
+})
+
+function suppressRepo() {
+  const repo = mkdtempSync(join(tmpdir(), 'repair-suppress2-'))
+  const git = (...args) => execFileSync('git', args, { cwd: repo, encoding: 'utf8' })
+  git('init', '-q', '-b', 'main'); git('config', 'user.name', 't'); git('config', 'user.email', 't@t')
+  for (const file of ['A.kt', 'B.kt', '한글.kt', 'D.kt']) writeFileSync(join(repo, file), 'val x = 1\n')
+  git('add', '.'); git('commit', '-q', '-m', 'init')
+  return { repo, git }
+}
+
+test('suppression forms Kotlin and the test frameworks use are all found, including non-ASCII paths', async () => {
+  const { repo } = suppressRepo()
+  writeFileSync(join(repo, 'A.kt'), '@file:Suppress("MagicNumber")\nval x = 1\n')
+  writeFileSync(join(repo, 'B.kt'), '@DisabledOnOs(OS.WINDOWS)\nfun t() {}\n')
+  writeFileSync(join(repo, '한글.kt'), '@Suppress("X")\nval x = 2\n')
+  writeFileSync(join(repo, 'D.kt'), 'xcontext("later") { }\nval y = 1\n')
+  assert.deepEqual((await findAddedSuppressions({ exec: execCommand, cwd: repo, files: ['A.kt', 'B.kt', '한글.kt', 'D.kt'] })).sort(), ['A.kt', 'B.kt', 'D.kt', '한글.kt'].sort())
+})
+
+test('the detector does not depend on the user git diff settings', async () => {
+  const { repo, git } = suppressRepo()
+  git('config', 'diff.noprefix', 'true'); git('config', 'diff.mnemonicPrefix', 'true'); git('config', 'core.quotepath', 'true')
+  writeFileSync(join(repo, 'A.kt'), '@Suppress("X")\nval x = 2\n'); writeFileSync(join(repo, '한글.kt'), '@Ignore\nval x = 2\n')
+  assert.deepEqual((await findAddedSuppressions({ exec: execCommand, cwd: repo, files: ['A.kt', '한글.kt'] })).sort(), ['A.kt', '한글.kt'].sort())
+})
+
+test('ordinary code that merely looks similar is not a suppression', async () => {
+  const { repo } = suppressRepo()
+  writeFileSync(join(repo, 'A.kt'), 'val xCoordinate = 1\nfun xFactor() = enabled = false\nval ignored = true\nval suppressed = 1\n')
+  assert.deepEqual(await findAddedSuppressions({ exec: execCommand, cwd: repo, files: ['A.kt'] }), [])
+})
+
+test('a suppression that was already in the working changes before the repair is not blamed on the repair', async () => {
+  const { repo } = suppressRepo()
+  writeFileSync(join(repo, 'A.kt'), '@Suppress("UsersOwn")\nval x = 2\n')
+  const before = await countAddedSuppressions({ exec: execCommand, cwd: repo, files: ['A.kt'] })
+  writeFileSync(join(repo, 'A.kt'), '@Suppress("UsersOwn")\nval x = 3\n')
+  assert.deepEqual(await findAddedSuppressions({ exec: execCommand, cwd: repo, files: ['A.kt'], before }), [], 'a code change next to the user suppression is fine')
+  writeFileSync(join(repo, 'A.kt'), '@Suppress("UsersOwn")\n@Suppress("Another")\nval x = 3\n')
+  assert.deepEqual(await findAddedSuppressions({ exec: execCommand, cwd: repo, files: ['A.kt'], before }), ['A.kt'], 'one more suppression is')
+})
+
+test('build logic, convention plugins, gradle properties and detekt config folders are protected too', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'repair-protected2-'))
+  const files = ['kotlin-conventions.gradle.kts', 'buildSrc/src/Deps.kt', 'build-logic/convention/Plugin.kt', 'gradle.properties', 'config/detekt/config.yml', '.editorconfig', 'Detekt-Rules.YML']
+  for (const file of files) { mkdirSync(join(repo, file, '..'), { recursive: true }); writeFileSync(join(repo, file), 'x') }
+  const scope = repairScope({ repoPath: repo, step: { cwd: repo, tasks: ['detekt'] }, selectedPaths: [] })
+  for (const file of files) assert.throws(() => assertRepairScope(scope, [file]), (error) => error.code === 'repair_out_of_scope', file)
+  const selected = repairScope({ repoPath: repo, step: { cwd: repo, tasks: ['detekt'] }, selectedPaths: ['gradle.properties'] })
+  assertRepairScope(selected, ['gradle.properties'])
 })

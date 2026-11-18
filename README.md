@@ -114,9 +114,9 @@ Gradle 변경은 모듈별 JDK를 찾아 `detekt → 테스트 → 커밋 → �
 - 최대 2회까지 수정합니다. 초과하면 마지막 실패 로그와 시도 내역(`repairs`)을 남기고 멈춥니다.
 - AI는 실패한 Gradle 모듈 디렉토리와 원래 고른 파일만 수정할 수 있습니다. 다음은 모두 `repair_out_of_scope`로 중단하며 변경은 작업 트리에 남깁니다. 수정된 파일은 고른 파일에 더해 함께 커밋합니다.
   - 모듈 밖 파일, 절대·상위 경로
-  - 검증 기준을 바꾸는 파일: `build.gradle*`, `settings.gradle*`, `gradle/`, `gradlew`, `libs.versions.toml`, `detekt*.yml`, `*baseline*.xml`, `.github/` (원래 고른 파일은 예외)
+  - 검증 기준을 바꾸는 파일: 모든 `*.gradle(.kts)`(컨벤션 플러그인 포함), `buildSrc/`·`build-logic/`, `gradle/`, `gradle.properties`, `gradlew`, `libs.versions.toml`, `detekt*.yml`·`config/detekt/`, `*baseline*.xml`, `.editorconfig`, `.github/` (원래 고른 파일은 예외)
   - 삭제된 파일, 그리고 수정 전부터 미커밋이었지만 고르지 않은 파일(사용자 작업)
-- `@Suppress`·`@Disabled`·`@Ignore`·`detekt:disable`·`enabled = false`를 새로 추가했으면 `repair_suppressed_check`로, AI가 직접 커밋해 HEAD가 바뀌었으면 `repair_head_changed`로 중단합니다.
+- `@Suppress`(`@file:`·`@get:` 포함)·`@Disabled*`·`@Ignore`·`detekt:disable`·Kotest `x…(`·`enabled = false` 설정을 수정 전보다 더 많이 추가했으면(수정 전부터 있던 것은 제외) `repair_suppressed_check`로, AI가 직접 커밋해 HEAD가 바뀌었으면 `repair_head_changed`로 중단합니다.
 - 파일을 하나도 바꾸지 않으면 같은 실패가 반복되므로 `repair_no_change`로 중단합니다. 취소하거나 30분을 넘기면 중단합니다.
 - 프롬프트는 `@Suppress`·`@Disabled`·detekt 설정 완화·테스트 삭제로 통과시키는 것을 금지하고, 로그를 지시가 아닌 데이터로 취급하게 합니다.
 - 진행 상황은 검증 상태 카드에 `자동 수정 중 N/2회`로 표시되고, 수정 실행은 실행 기록에 `repair`로 남습니다.
