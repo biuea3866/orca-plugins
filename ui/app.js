@@ -1,4 +1,5 @@
 // Local Self Review UI — vanilla ES modules, no build step.
+import { repairSummary, repairActive, publishedNotice } from '/ui/lib/repair-status.mjs'
 import {syntaxLanguage,tokenizeSourceLine} from '/ui/lib/syntax.mjs'
 import { createApi, ApiRequestError } from '/ui/lib/api.mjs'
 import { beginSelection, extendSelection, clampRange, isLineSelected } from '/ui/lib/selection.mjs'
@@ -620,15 +621,17 @@ async function renderSession(sessionId) {
   let publication = null, checkingPublication = false
   function drawChecks() {
     const labels={queued:'대기',running:'실행 중',passed:'통과',failed:'실패',interrupted:'중단됨',not_applicable:'검증 대상 없음'}
-    const html=checksState ? h`<div class="card-body small" role="status"><strong>최근 커밋 전 검증: ${labels[checksState.status] || checksState.status}</strong><span> · ${formatDate(checksState.startedAt)} 시작</span>${checksState.reason?raw(h`<p>${checksState.reason}</p>`):''}${raw(checksState.steps.map(step=>h`<div><span class="badge">${labels[step.status] || step.status}</span> ${step.kind==='test'?'테스트':'detekt'} <span class="mono">${step.tasks.join(' ')}</span>${step.exitCode!==null?raw(h` · exit ${step.exitCode}`):''}${step.log?raw(h`<details ${raw(step.status==='failed'?'open':'')}><summary>실행 로그</summary><pre style="max-height:260px;overflow:auto">${step.log}</pre></details>`):''}</div>`).join(''))}</div>` : ''
+    const repair=repairSummary(checksState)
+    const repairHtml=repair?h`<div class="card-body small" role="status" data-repair-status><strong>${repair.headline}</strong>${raw(repair.rounds.map(row=>h`<div>${row.text}</div>`).join(''))}</div>`:''
+    const html=checksState ? repairHtml+h`<div class="card-body small" role="status"><strong>최근 커밋 전 검증: ${labels[checksState.status] || checksState.status}</strong><span> · ${formatDate(checksState.startedAt)} 시작</span>${checksState.reason?raw(h`<p>${checksState.reason}</p>`):''}${raw(checksState.steps.map(step=>h`<div><span class="badge">${labels[step.status] || step.status}</span> ${step.kind==='test'?'테스트':'detekt'} <span class="mono">${step.tasks.join(' ')}</span>${step.exitCode!==null?raw(h` · exit ${step.exitCode}`):''}${step.log?raw(h`<details ${raw(step.status==='failed'?'open':'')}><summary>실행 로그</summary><pre style="max-height:260px;overflow:auto">${step.log}</pre></details>`):''}</div>`).join(''))}</div>` : ''
     for(const target of [publicationEl.querySelector('[data-checks-display]'),publishDialog?.querySelector('[data-checks-display]')])if(target)target.innerHTML=html
   }
   async function refreshChecks() {
-    try {checksState=(await api.get(`/api/sessions/${session.id}/publish-checks`)).checks;drawChecks();if(checksState?.status==='running')startChecksPolling();else if(!publishing){clearInterval(checksTimer);checksTimer=null}}
+    try {checksState=(await api.get(`/api/sessions/${session.id}/publish-checks`)).checks;drawChecks();if(checksState?.status==='running'||repairActive(checksState))startChecksPolling();else if(!publishing){clearInterval(checksTimer);checksTimer=null}}
     catch { /* the running publication request reports its own error */ }
   }
   function startChecksPolling(){if(!checksTimer)checksTimer=setInterval(refreshChecks,1000)}
-  async function finishChecksPolling(){await refreshChecks();if(checksState?.status!=='running'){clearInterval(checksTimer);checksTimer=null}}
+  async function finishChecksPolling(){await refreshChecks();if(checksState?.status!=='running'&&!repairActive(checksState)){clearInterval(checksTimer);checksTimer=null}}
 
   function drawPublication() {
     const labels = {'local-changes':'로컬 미커밋 변경 있음','remote-verified':'현재 HEAD 원격 포함 확인','local-commit':'현재 HEAD 원격 포함 미확인','unknown':'원격 상태 확인 실패'}
@@ -674,12 +677,12 @@ async function renderSession(sessionId) {
       dialog.querySelector('[data-publish-error]').textContent=''
       checksState={status:'queued',steps:(plan.checks||[]).map(step=>({...step,status:'queued',exitCode:null,log:''}))}
       drawChecks();startChecksPolling()
-      dialog.querySelector('[type=submit]').textContent='검증·커밋·푸시 중…'
+      dialog.querySelector('[type=submit]').textContent='검증(실패 시 AI 수정)·커밋·푸시 중…'
       for(const button of dialog.querySelectorAll('button'))button.disabled=true
       try {
         const result=await api.post(`/api/sessions/${session.id}/publish`,{snapshot:plan.snapshot,paths,message})
         close()
-        showNotice(`원격 반영 확인: ${result.commit.slice(0,10)} → ${result.remote}/${result.branch}`)
+        showNotice(publishedNotice(result))
         await reloadThreadsOnly()
       } catch(error){dialog.querySelector('[data-publish-error]').textContent=describeError(error)}
       finally{publishing=false;dialog.querySelector('[type=submit]').textContent='커밋 & 푸시 실행';for(const button of dialog.querySelectorAll('button'))button.disabled=false;await finishChecksPolling();await refreshPublication();drawRun()}

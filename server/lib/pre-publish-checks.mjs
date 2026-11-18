@@ -41,6 +41,14 @@ export function planPublishChecks(cwd,paths){
  return steps
 }
 
+/** Absolute module directories behind a step's Gradle tasks (`:a:b:test` → <cwd>/a/b); a root task is the whole build. */
+export function moduleDirsOfStep(step){
+ return [...new Set((step.tasks??[]).map(task=>{
+  const segments=task.split(':').filter(Boolean).slice(0,-1)
+  return segments.length?join(step.cwd,...segments):step.cwd
+ }))]
+}
+
 const INIT_SCRIPT=`gradle.afterProject { p ->
  p.tasks.configureEach { t ->
   if (t.name.startsWith('detekt') && t.hasProperty('autoCorrect')) t.autoCorrect = false

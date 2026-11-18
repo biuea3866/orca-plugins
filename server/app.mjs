@@ -22,9 +22,10 @@ import { RunManager, defaultAgentCommands, pickRunToShow, filterIgnoredChanges }
 import { annotateThreads } from './lib/anchor.mjs'
 import {planPublishChecks} from './lib/pre-publish-checks.mjs'
 import {previewWorkingTree,publishWorkingTree} from './lib/working-tree-publish.mjs'
+import {publishWithRepair,repairScope,assertRepairScope,MAX_REPAIR_ROUNDS} from './lib/publish-repair.mjs'
 import {defaultCommitMessage} from './lib/commit-message.mjs'
 import {fixResultEntries} from './lib/fix-results.mjs'
-import { buildPrompt, completedFixThreads, selectRunnableThreads } from './lib/prompt.mjs'
+import { buildPrompt, buildRepairPrompt, completedFixThreads, selectRunnableThreads } from './lib/prompt.mjs'
 import { parseUnifiedDiff } from './lib/diff-parser.mjs'
 import { execCommand } from './lib/exec.mjs'
 import { enrichPath, resolveBin, resolveLocalAgent } from './lib/bins.mjs'
@@ -81,7 +82,9 @@ export function createServer({
   panelRoot = pluginRoot,
   bridgeMaintenanceMs = 60_000,
   runProgressMs = 10_000,
-  panelStaleCheckMs = 15_000
+  panelStaleCheckMs = 15_000,
+  repairPollMs = 1000,
+  repairTimeoutMs = 30 * 60_000
 }) {
   if (enrichEnvironment) enrichPath(process.env)
   mkdirSync(homeDir, { recursive: true, mode: 0o700 })
@@ -266,10 +269,73 @@ export function createServer({
   function publishChecksOptions(session){
     return {logDir:join(homeDir,'publication-checks',session.id),onUpdate:state=>{
       const current=store.getSession(session.id)
-      current.publishChecks=structuredClone(state)
+      current.publishChecks={...structuredClone(state),...(current.publishChecks?.repair?{repair:current.publishChecks.repair}:{})}
       store.save(current)
       publishPanel('pre-publish-checks')
     }}
+  }
+
+  // ---- fix and retry: an AI run repairs a failed detekt/test check, then the publication is attempted again ----
+  function updateRepairState(sessionId, change) {
+    const session = store.getSession(sessionId)
+    const checks = session.publishChecks ?? { status: 'failed', steps: [] }
+    checks.repair = change === null ? undefined : { max: MAX_REPAIR_ROUNDS, rounds: [], active: false, ...checks.repair, ...change(checks.repair ?? { rounds: [] }) }
+    if (checks.repair === undefined) delete checks.repair
+    session.publishChecks = checks
+    store.save(session)
+    publishPanel('pre-publish-repair')
+  }
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  async function waitForRun(runId) {
+    const deadline = Date.now() + repairTimeoutMs
+    for (;;) {
+      const run = runs.get(runId)
+      if (run.status !== 'queued' && run.status !== 'running' && !run.committing) return run
+      if (Date.now() > deadline) { runs.cancel(runId); throw new ApiError(504, 'repair_timeout', 'AI 자동 수정이 제한 시간 안에 끝나지 않아 중단했습니다. 커밋·푸시하지 않았습니다.') }
+      await sleep(repairPollMs)
+    }
+  }
+  async function repairCheckFailure({ sessionId, round, failure, paths }) {
+    const session = store.getSession(sessionId)
+    const scope = repairScope({ repoPath: session.repoPath, step: failure, selectedPaths: paths })
+    const prompt = buildRepairPrompt({ session, step: failure, paths, scopeDirs: scope.dirs, round, maxRounds: MAX_REPAIR_ROUNDS })
+    const run = await runs.start({ session, threadIds: [], agent: session.agent || 'claude', prompt, mode: 'fix', nonce: null, meta: { repair: true, repairRound: round, reviewPaths: paths } })
+    ensureRunPolling()
+    const entry = { round, runId: run.id, agent: run.agent, status: 'fixing', failedStep: { kind: failure.kind, tasks: failure.tasks }, startedAt: now() }
+    updateRepairState(sessionId, (previous) => ({ active: true, round, runId: run.id, agent: run.agent, rounds: [...previous.rounds.filter((item) => item.round !== round), entry] }))
+    const settle = (status, extra = {}) => updateRepairState(sessionId, (previous) => ({ rounds: previous.rounds.map((item) => item.round === round ? { ...item, status, endedAt: now(), ...extra } : item) }))
+    try {
+      const finished = await waitForRun(run.id)
+      if (finished.status !== 'succeeded') throw new ApiError(409, finished.status === 'cancelled' ? 'repair_cancelled' : 'repair_failed', `AI 자동 수정 실행이 ${finished.status} 상태로 끝나 중단했습니다. 커밋·푸시하지 않았습니다.`)
+      const changed = finished.changedFiles ?? []
+      if (!changed.length) throw new ApiError(409, 'repair_no_change', 'AI가 파일을 수정하지 않아 같은 검증 실패가 반복될 것이므로 중단했습니다. 커밋·푸시하지 않았습니다.')
+      assertRepairScope(scope, changed)
+      settle('fixed', { changedFiles: changed })
+      return { runId: run.id, changedFiles: changed }
+    } catch (error) {
+      settle('failed', { reason: error.code ?? 'error' })
+      throw error
+    }
+  }
+  /** `first` is the publication the user asked for; after a failed check it is retried as a working-tree publication over the repaired files. */
+  async function publishRepairing({ sessionId, first, paths, messageFor }) {
+    updateRepairState(sessionId, () => ({ active: false, rounds: [], round: 0 }))
+    const gitBinary = resolveBin('git') ?? 'git'
+    try {
+      return await publishWithRepair({
+        first,
+        paths,
+        repair: ({ round, failure, paths: selected }) => repairCheckFailure({ sessionId, round, failure, paths: selected }),
+        retry: async (selected) => {
+          const fresh = store.getSession(sessionId)
+          const preview = await previewWorkingTree({ exec, gitBinary, session: fresh })
+          const use = selected.filter((path) => preview.paths.includes(path))
+          return publishWorkingTree({ exec, gitBinary, session: fresh, selection: { snapshot: preview.snapshot, paths: use, message: messageFor(preview, use) }, checksOptions: publishChecksOptions(fresh) })
+        }
+      })
+    } finally {
+      try { updateRepairState(sessionId, () => ({ active: false })) } catch { /* session gone */ }
+    }
   }
   async function publishFixRun(runId) {
     const run = runs.get(runId)
@@ -279,7 +345,7 @@ export function createServer({
     publishing.add(publishKey)
     try {
       const session = store.getSession(run.sessionId)
-      const result = await publishRun({ exec, gitBinary: resolveBin('git') ?? 'git', run, session, checksOptions:publishChecksOptions(session) })
+      const result = await publishRepairing({ sessionId: session.id, paths: run.changedFiles ?? [], first: () => publishRun({ exec, gitBinary: resolveBin('git') ?? 'git', run, session, checksOptions:publishChecksOptions(session) }), messageFor: (preview, use) => defaultCommitMessage(preview.publishBranch ?? session.branch, use, run.commitMessage) })
       const latest = runs.get(runId)
       latest.published = { commit: result.commit, branch: result.branch, remote: result.remote, remoteHead:result.remoteHead, verifiedAt:now(), at: now() }
       delete latest.publishError
@@ -304,7 +370,7 @@ export function createServer({
     if(publishing.has(key))throw new ApiError(409,'publish_in_progress','이 작업 트리를 게시 중입니다.')
     publishing.add(key)
     try {
-      const result=await publishWorkingTree({exec,gitBinary:resolveBin('git')??'git',session,selection,checksOptions:publishChecksOptions(session)})
+      const result=await publishRepairing({sessionId,paths:selection.paths??[],first:()=>publishWorkingTree({exec,gitBinary:resolveBin('git')??'git',session,selection,checksOptions:publishChecksOptions(session)}),messageFor:()=>selection.message})
       const current=store.getSession(sessionId)
       current.lastPublication={...result,paths:selection.paths,message:selection.message,verifiedAt:now()}
       delete current.lastPublishError
@@ -826,7 +892,7 @@ export function createServer({
       }
       if (segments[2] === 'runs' && segments.length === 3 && method === 'GET') {
         store.getSession(sessionId)
-        return sendJson(response, 200, { runs: runs.list().filter(run => run.sessionId === sessionId).map(run => ({id: run.id, mode: run.mode, status: run.status, agent: run.agent, startedAt: run.startedAt})) })
+        return sendJson(response, 200, { runs: runs.list().filter(run => run.sessionId === sessionId).map(run => ({id: run.id, mode: run.mode, status: run.status, agent: run.agent, startedAt: run.startedAt, ...(run.repair ? {repair: true} : {})})) })
       }
       if (segments[2] === 'runs' && segments.length === 3 && method === 'POST') { const run = await startRun(sessionId, body); ensureRunPolling(); publishPanel('run'); return sendJson(response, 202, run) }
     }

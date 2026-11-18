@@ -133,3 +133,8 @@ test('a run record keeps its change snapshot on disk, owner-only, and reads it b
   assert.deepEqual(manager.readChanges('run_000000000001'), files)
   assert.equal(manager.readChanges('run_ffffffffffff'), null, 'an unknown run has no snapshot')
 })
+
+test('a check-failure repair run is marked in its summary', () => {
+  assert.equal(summarizeRun({ id: 'r1', status: 'succeeded', repair: true, repairRound: 2, startedAt: 'x' }).repairRound, 2)
+  assert.equal('repair' in summarizeRun({ id: 'r2', status: 'succeeded', startedAt: 'x' }), false)
+})

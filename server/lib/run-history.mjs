@@ -44,6 +44,7 @@ export function summarizeRun(run) {
     id: run.id,
     sessionId: run.sessionId ?? null,
     mode: run.mode ?? 'fix',
+    ...(run.repair ? { repair: true, repairRound: run.repairRound ?? null } : {}),
     agent: run.agent ?? null,
     status: run.status,
     exitCode: run.exitCode ?? null,

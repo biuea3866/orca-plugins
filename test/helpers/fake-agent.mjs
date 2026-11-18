@@ -1,8 +1,8 @@
 // Fake AI agent CLI used by the integration tests. Reads the prompt from stdin,
-// writes it to FAKE_AGENT_PROMPT_OUT, optionally edits a file, optionally sleeps.
+// writes it to FAKE_AGENT_PROMPT_OUT, optionally edits a file (FAKE_AGENT_APPEND appends a line instead of overwriting), optionally sleeps.
 // With FAKE_AGENT_ANSWER it behaves like an agent asked to answer review questions: it reads the response code and
 // the thread ids from the prompt and prints one answer block per thread.
-import { readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'
 
 const prompt = readFileSync(0, 'utf8')
 if (process.env.FAKE_AGENT_PROMPT_OUT) writeFileSync(process.env.FAKE_AGENT_PROMPT_OUT, prompt)
@@ -18,7 +18,7 @@ if (process.env.FAKE_AGENT_ANSWER) {
 }
 // A real agent asked to answer questions is read-only, so the fake one edits only for fix prompts.
 const answering = prompt.includes('질문 답변 요청')
-if (!answering) for (const target of String(process.env.FAKE_AGENT_EDIT ?? '').split(',').filter(Boolean)) writeFileSync(target, 'edited by fake agent\n')
+if (!answering) for (const target of String(process.env.FAKE_AGENT_EDIT ?? '').split(',').filter(Boolean)) (process.env.FAKE_AGENT_APPEND ? appendFileSync(target, 'another attempt\n') : writeFileSync(target, 'edited by fake agent\n'))
 const sleepMs = Number(process.env.FAKE_AGENT_SLEEP_MS ?? 0)
 if (sleepMs > 0) {
   setTimeout(() => { process.stdout.write('done after sleep\n'); process.exit(Number(process.env.FAKE_AGENT_EXIT ?? 0)) }, sleepMs)
