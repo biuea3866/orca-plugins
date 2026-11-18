@@ -194,3 +194,47 @@ test('build logic, convention plugins, gradle properties and detekt config folde
   const selected = repairScope({ repoPath: repo, step: { cwd: repo, tasks: ['detekt'] }, selectedPaths: ['gradle.properties'] })
   assertRepairScope(selected, ['gradle.properties'])
 })
+
+test('qualified annotations, JUnit/TestNG enabled=false and Kotest specs with other argument orders are all found', async () => {
+  const { repo } = suppressRepo()
+  writeFileSync(join(repo, 'A.kt'), '@org.junit.Ignore\nval x = 1\n')
+  writeFileSync(join(repo, 'B.kt'), '@kotlin.Suppress("X")\nval x = 1\n')
+  writeFileSync(join(repo, 'D.kt'), '@Test(enabled = false)\nfun t() {}\n')
+  writeFileSync(join(repo, '한글.kt'), 'xshould("later") { }\nval z = 1\n')
+  writeFileSync(join(repo, 'E.kt'), 'test("a").config(invocations = 2, enabled = false) { }\n')
+  assert.deepEqual((await findAddedSuppressions({ exec: execCommand, cwd: repo, files: ['A.kt', 'B.kt', 'D.kt', '한글.kt', 'E.kt'] })).sort(), ['A.kt', 'B.kt', 'D.kt', 'E.kt', '한글.kt'].sort())
+})
+
+test('mentions in comments and functions that merely share a name are not suppressions', async () => {
+  const { repo } = suppressRepo()
+  writeFileSync(join(repo, 'A.kt'), '// we no longer need @Suppress here\n/**\n * @Disabled is gone\n */\n * @Ignore note\nfun xit(): Int = 1\nval x = 1\n')
+  assert.deepEqual(await findAddedSuppressions({ exec: execCommand, cwd: repo, files: ['A.kt'] }), [])
+})
+
+test('the baseline compares the suppression lines themselves, so widening or swapping the user own one is caught', async () => {
+  const { repo } = suppressRepo()
+  writeFileSync(join(repo, 'A.kt'), '@Suppress("UsersOwn")\nval x = 2\n')
+  const before = await countAddedSuppressions({ exec: execCommand, cwd: repo, files: ['A.kt'] })
+  writeFileSync(join(repo, 'A.kt'), '@Suppress("UsersOwn", "MagicNumber", "LongMethod")\nval x = 2\n')
+  assert.deepEqual(await findAddedSuppressions({ exec: execCommand, cwd: repo, files: ['A.kt'], before }), ['A.kt'], 'a widened suppression is a new line')
+  writeFileSync(join(repo, 'A.kt'), 'val x = 2\n@Suppress("Different")\n')
+  assert.deepEqual(await findAddedSuppressions({ exec: execCommand, cwd: repo, files: ['A.kt'], before }), ['A.kt'], 'deleting the user one and adding another is not neutral')
+  writeFileSync(join(repo, 'A.kt'), 'val x = 4\n')
+  assert.deepEqual(await findAddedSuppressions({ exec: execCommand, cwd: repo, files: ['A.kt'], before }), [], 'removing a suppression is fine')
+})
+
+test('a large untracked file is left out of the baseline instead of being read whole', async () => {
+  const { repo } = suppressRepo()
+  writeFileSync(join(repo, 'Big.kt'), '@Suppress("X")\n' + 'val a = 1\n'.repeat(50))
+  const skipped = await countAddedSuppressions({ exec: execCommand, cwd: repo, files: ['Big.kt'], maxBytes: 100 })
+  assert.equal(skipped.has('Big.kt'), false)
+  assert.equal((await countAddedSuppressions({ exec: execCommand, cwd: repo, files: ['Big.kt'] })).has('Big.kt'), true, 'without the cap it is read')
+})
+
+test('test framework property files are protected', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'repair-protected3-'))
+  const files = ['m/src/test/resources/junit-platform.properties', 'm/src/test/resources/kotest.properties']
+  for (const file of files) { mkdirSync(join(repo, file, '..'), { recursive: true }); writeFileSync(join(repo, file), 'x') }
+  const scope = repairScope({ repoPath: repo, step: { cwd: repo, tasks: [':m:test'] }, selectedPaths: [] })
+  for (const file of files) assert.throws(() => assertRepairScope(scope, [file]), (error) => error.code === 'repair_out_of_scope', file)
+})

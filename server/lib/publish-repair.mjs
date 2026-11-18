@@ -1,4 +1,4 @@
-import {existsSync,readFileSync} from 'node:fs'
+import {existsSync,readFileSync,statSync} from 'node:fs'
 import {isAbsolute,join,relative,resolve,sep} from 'node:path'
 import {ApiError} from './store.mjs'
 import {moduleDirsOfStep} from './pre-publish-checks.mjs'
@@ -36,8 +36,13 @@ const PROTECTED=[
  /(^|\/)config\/detekt\//i,
  /(^|\/)[^/]*baseline[^/]*\.xml$/i,
  /(^|\/)\.editorconfig$/i,
+ /(^|\/)(junit-platform|kotest)\.properties$/i,
  /^\.github\//i
 ]
+
+export function pathInScope(scope,path){
+ return scope.files.has(path)||scope.dirs.some(dir=>dir===''||path===dir||path.startsWith(dir+'/'))
+}
 
 export function assertRepairScope(scope,changedFiles){
  const problems=[]
@@ -58,32 +63,45 @@ export function assertNoForeignChanges({changed,dirtyBefore,selected}){
  if(foreign.length)throw new ApiError(409,'repair_out_of_scope',`AI가 선택하지 않은 미커밋 파일을 수정해 자동 수정을 중단했습니다: ${foreign.join(', ')}. 변경은 작업 트리에 남아 있으니 확인하세요. 커밋·푸시하지 않았습니다.`,{files:foreign})
 }
 
-// Kotlin suppressions (`@Suppress`, `@file:Suppress`, `@get:Suppress`), JUnit/Kotest disabling and skipped specs.
-const SUPPRESSION=/@(?:\w+:)?Suppress(?:Warnings)?\b|@Disabled\w*|@Ignore\b|detekt:\s*(?:disable|suppress)|\bx(?:it|test|describe|context|feature|scenario|given|when|then|expect|funSpec)\(|\b(?:config|@Test)\(\s*enabled\s*=\s*false/
+// Kotlin suppressions (`@Suppress`, `@file:Suppress`, `@kotlin.Suppress`), JUnit/Kotest disabling and skipped specs.
+const ANNOTATION=/@(?:[\w.]+\.)?(?:\w+:)?(?:Suppress(?:Warnings)?|Disabled\w*|Ignore)\b/
+// `// detekt:disable` is itself a comment: it is a directive, so it is checked before comments are ignored.
+const DETEKT_DIRECTIVE=/detekt:\s*(?:disable|suppress)/
+const OTHER=/(?<!fun\s)\bx(?:it|test|describe|context|feature|scenario|given|when|then|expect|should)\(|\bconfig\([^)]*\benabled\s*=\s*false|@Test\([^)]*\benabled\s*=\s*false/
+const COMMENT=/^\s*(?:\/\/|\/\*|\*)/
+const isSuppression=line=>DETEKT_DIRECTIVE.test(line)||(!COMMENT.test(line)&&(ANNOTATION.test(line)||OTHER.test(line)))
+const normalize=line=>line.trim().replace(/\s+/g,' ')
 
 // Fixed output format: the user's diff.noprefix / mnemonicPrefix / quotepath settings must not change what we parse.
 const DIFF_FORMAT=['-c','core.quotepath=off','-c','diff.noprefix=false','-c','diff.mnemonicPrefix=false','-c','diff.renames=false','--literal-pathspecs','diff','HEAD','-U0','--no-color','--src-prefix=a/','--dst-prefix=b/','--no-ext-diff','--no-textconv']
 
-/** Per file, how many lines in the working changes (versus HEAD, or a whole new file) carry a suppression. */
-export async function countAddedSuppressions({exec,gitBinary='git',cwd,files}){
- const counts=new Map()
- if(!files.length)return counts
+/**
+ * Per file, the suppression lines (normalised text → count) in the working changes versus HEAD, or in a whole new file.
+ * `maxBytes` leaves bigger untracked files out (the baseline must not read a user's huge file whole).
+ */
+export async function countAddedSuppressions({exec,gitBinary='git',cwd,files,maxBytes=Infinity}){
+ const found=new Map()
+ const add=(path,line)=>{const lines=found.get(path)??new Map();lines.set(normalize(line),(lines.get(normalize(line))??0)+1);found.set(path,lines)}
+ if(!files.length)return found
  const run=async args=>{const result=await exec(gitBinary,args,{cwd,timeout:60000});if(result.code!==0)throw new ApiError(500,'git_failed',(result.stderr||result.stdout||'git failed').trim());return result.stdout}
  let current=null
  for(const line of (await run([...DIFF_FORMAT,'--',...files])).split('\n')){
   const header=/^\+\+\+ b\/(.+)$/.exec(line)
   if(header){current=header[1];continue}
-  if(current&&line.startsWith('+')&&!line.startsWith('+++')&&SUPPRESSION.test(line))counts.set(current,(counts.get(current)??0)+1)
+  if(current&&line.startsWith('+')&&!line.startsWith('+++')&&isSuppression(line.slice(1)))add(current,line.slice(1))
  }
  const untracked=(await run(['-c','core.quotepath=off','--literal-pathspecs','ls-files','--others','--exclude-standard','-z','--',...files])).split('\0').filter(Boolean)
- for(const path of untracked)try{const hits=readFileSync(join(cwd,path),'utf8').split('\n').filter(line=>SUPPRESSION.test(line)).length;if(hits)counts.set(path,hits)}catch{/* unreadable: not a suppression */}
- return counts
+ for(const path of untracked)try{
+  if(statSync(join(cwd,path)).size>maxBytes)continue
+  for(const line of readFileSync(join(cwd,path),'utf8').split('\n'))if(isSuppression(line))add(path,line)
+ }catch{/* unreadable: not a suppression */}
+ return found
 }
 
 /** Files where a repair added a suppression, a disabled test or a skipped spec beyond what `before` already counted. */
 export async function findAddedSuppressions({exec,gitBinary='git',cwd,files,before=new Map()}){
  const now=await countAddedSuppressions({exec,gitBinary,cwd,files})
- return[...now].filter(([path,count])=>count>(before.get(path)??0)).map(([path])=>path)
+ return[...now].filter(([path,lines])=>[...lines].some(([line,count])=>count>(before.get(path)?.get(line)??0))).map(([path])=>path)
 }
 
 /**
