@@ -11,6 +11,15 @@ function filterAlive(terminals, registeredIds) {
   return registeredIds.filter((id) => live.has(id))
 }
 
+// A bridge terminal is titled with its command (the quoted launcher path, cut at the first space) and prints a
+// banner; either identifies one that has not registered its ids yet, so a slow registration never spawns a second one.
+function runningBridges(terminals, worktreePath, launcherPath) {
+  const command = shellQuote(launcherPath)
+  return terminals.filter((terminal) => terminal.worktreePath === worktreePath
+    && ((typeof terminal.title === 'string' && terminal.title.length > 1 && command.startsWith(terminal.title)) || terminal.title === 'Self Review bridge'
+      || (typeof terminal.preview === 'string' && terminal.preview.includes('패널 브리지'))))
+}
+
 export class BridgeKeeper {
   // Last line of defence against a runaway: whatever the cause, bridge terminals are created at most this often.
   constructor({ exec, orcaBinary, launcherPath, now = () => Date.now(), cooldownMs = 60_000, log = () => {}, capWindowMs = 10 * 60_000, perWorktreeCap = 2, globalCap = 6 }) {
@@ -55,6 +64,7 @@ export class BridgeKeeper {
     if (terminals === null) return { created: false, alive: null, unavailable: true }
     const alive = filterAlive(terminals, registeredIds)
     if (alive.length > 0) return { created: false, alive }
+    if (runningBridges(terminals, worktreePath, this.launcherPath).length > 0) return { created: false, alive, running: true }
     const last = this.lastAttempt.get(worktreePath) ?? -Infinity
     if (this.now() - last < this.cooldownMs) return { created: false, alive, throttled: true }
     const current = this.now()
