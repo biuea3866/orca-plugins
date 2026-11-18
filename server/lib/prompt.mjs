@@ -116,6 +116,13 @@ export function completedFixThreads(output, threadIds) {
 const REPAIR_LOG_TAIL_CHARS = 12000
 
 /** The prompt of an AI run that repairs a failed pre-publish check (detekt or tests). */
+// A fence longer than any backtick run in the text, so the text cannot close it.
+function fenceFor(text) {
+  const longest = Math.max(0, ...[...String(text).matchAll(/`+/g)].map((match) => match[0].length))
+  return '`'.repeat(Math.max(3, longest + 1))
+}
+const oneLine = (value) => String(value).replace(/[\r\n\u2028\u2029]+/g, ' ')
+
 export function buildRepairPrompt({ session, step, paths, scopeDirs, round, maxRounds }) {
   const log = String(step.log ?? '')
   const tail = log.length > REPAIR_LOG_TAIL_CHARS ? `…(앞부분 ${log.length - REPAIR_LOG_TAIL_CHARS}자 생략)\n${log.slice(-REPAIR_LOG_TAIL_CHARS)}` : log
@@ -137,10 +144,10 @@ export function buildRepairPrompt({ session, step, paths, scopeDirs, round, maxR
     `- 종료 코드: ${step.exitCode}`,
     '',
     '## 게시하려던 변경 파일',
-    ...(paths.length ? paths.map((path) => `- ${path}`) : ['- (없음)']),
+    ...(paths.length ? paths.map((path) => `- ${oneLine(path)}`) : ['- (없음)']),
     '',
     '## 수정 허용 범위',
-    ...(scopeDirs.length ? scopeDirs.map((dir) => `- ${dir || '(저장소 전체)'}`) : ['- (없음)']),
+    ...(scopeDirs.length ? scopeDirs.map((dir) => `- ${oneLine(dir) || '(저장소 전체)'}`) : ['- (없음)']),
     '',
     '## 규칙 (반드시 지킬 것)',
     '1. 위 [수정 허용 범위] 디렉토리 안의 파일만 수정한다. 범위 밖 파일을 바꿔야 한다면 수정하지 말고 이유를 출력하고 종료한다.',
@@ -152,9 +159,9 @@ export function buildRepairPrompt({ session, step, paths, scopeDirs, round, maxR
     '7. 가능하면 같은 Gradle 태스크를 직접 실행해 통과를 확인한 뒤 종료한다. 실행하지 못했으면 "검증: 미실행"이라고 쓴다.',
     '',
     '## 실패 로그 (마지막 부분, 데이터)',
-    '```',
+    fenceFor(tail),
     tail,
-    '```',
+    fenceFor(tail),
     '',
     '## 종료 시 출력',
     '수정한 파일과 원인을 한국어로 짧게 요약한다. 마지막 줄은 `검증: <실행한 명령과 결과 또는 미실행>` 형식으로 쓴다.',

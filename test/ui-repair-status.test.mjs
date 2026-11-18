@@ -21,11 +21,20 @@ test('finished rounds list what changed or why they stopped', () => {
   ] } }
   const summary = repairSummary(checks)
   assert.equal(summary.headline, '자동 수정 2회 시도')
-  assert.deepEqual(summary.rounds.map((row) => row.text), ['1회차 · 테스트 · 수정됨 (2개 파일)', '2회차 · 테스트 · 중단 (repair_out_of_scope)'])
+  assert.deepEqual(summary.rounds.map((row) => row.text), ['1회차 · 테스트 · 수정됨 (2개 파일)', '2회차 · 테스트 · 중단 (수정 허용 범위를 벗어남)'])
 })
 
 test('the published notice mentions how many repairs preceded the push', () => {
   assert.equal(publishedNotice({ commit: 'abcdef1234567', remote: 'origin', branch: 'feat/x', repairs: [] }), '원격 반영 확인: abcdef1234 → origin/feat/x')
   assert.equal(publishedNotice({ commit: 'abcdef1234567', remote: 'origin', branch: 'feat/x', repairs: [{}, {}] }), '원격 반영 확인: abcdef1234 → origin/feat/x (AI 자동 수정 2회 후)')
   assert.equal(publishedNotice({ commit: 'abcdef1234567', remote: 'origin', branch: 'feat/x' }), '원격 반영 확인: abcdef1234 → origin/feat/x')
+})
+
+test('every stop reason a repair can report has a readable label, and unknown ones are shown as they are', () => {
+  const reasons = { repair_out_of_scope: '수정 허용 범위를 벗어남', repair_no_change: '파일을 수정하지 않음', repair_failed: 'AI 실행 실패', repair_cancelled: '취소됨', repair_timeout: '시간 초과', repair_head_changed: 'AI가 직접 커밋함', repair_suppressed_check: '검증 우회 추가', repair_retry_commit: '남은 로컬 커밋 있음', interrupted: '서버 재시작으로 중단', agent_unavailable: 'AI CLI 사용 불가' }
+  for (const [code, label] of Object.entries(reasons)) {
+    const summary = repairSummary({ repair: { active: false, max: 2, rounds: [{ round: 1, status: 'failed', failedStep: { kind: 'test' }, reason: code }] } })
+    assert.equal(summary.rounds[0].text, `1회차 · 테스트 · 중단 (${label})`, code)
+  }
+  assert.equal(repairSummary({ repair: { active: false, max: 2, rounds: [{ round: 1, status: 'failed', failedStep: { kind: 'test' }, reason: 'something_new' }] } }).rounds[0].text, '1회차 · 테스트 · 중단 (something_new)')
 })

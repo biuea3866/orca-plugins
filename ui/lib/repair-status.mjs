@@ -5,11 +5,24 @@ export function repairActive(checks) {
   return checks?.repair?.active === true
 }
 
+const REASONS = {
+  repair_out_of_scope: '수정 허용 범위를 벗어남',
+  repair_no_change: '파일을 수정하지 않음',
+  repair_failed: 'AI 실행 실패',
+  repair_cancelled: '취소됨',
+  repair_timeout: '시간 초과',
+  repair_head_changed: 'AI가 직접 커밋함',
+  repair_suppressed_check: '검증 우회 추가',
+  repair_retry_commit: '남은 로컬 커밋 있음',
+  interrupted: '서버 재시작으로 중단',
+  agent_unavailable: 'AI CLI 사용 불가'
+}
+
 function rowText(round) {
   const kind = KIND[round.failedStep?.kind] ?? round.failedStep?.kind ?? ''
   const state = round.status === 'fixing' ? '수정 중'
     : round.status === 'fixed' ? `수정됨 (${(round.changedFiles ?? []).length}개 파일)`
-    : `중단 (${round.reason ?? '오류'})`
+    : `중단 (${REASONS[round.reason] ?? round.reason ?? '오류'})`
   return `${round.round}회차 · ${kind} · ${state}`
 }
 

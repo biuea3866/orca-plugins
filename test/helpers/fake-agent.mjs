@@ -2,7 +2,8 @@
 // writes it to FAKE_AGENT_PROMPT_OUT, optionally edits a file (FAKE_AGENT_APPEND appends a line instead of overwriting), optionally sleeps.
 // With FAKE_AGENT_ANSWER it behaves like an agent asked to answer review questions: it reads the response code and
 // the thread ids from the prompt and prints one answer block per thread.
-import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 
 const prompt = readFileSync(0, 'utf8')
 if (process.env.FAKE_AGENT_PROMPT_OUT) writeFileSync(process.env.FAKE_AGENT_PROMPT_OUT, prompt)
@@ -18,7 +19,12 @@ if (process.env.FAKE_AGENT_ANSWER) {
 }
 // A real agent asked to answer questions is read-only, so the fake one edits only for fix prompts.
 const answering = prompt.includes('질문 답변 요청')
-if (!answering) for (const target of String(process.env.FAKE_AGENT_EDIT ?? '').split(',').filter(Boolean)) (process.env.FAKE_AGENT_APPEND ? appendFileSync(target, 'another attempt\n') : writeFileSync(target, 'edited by fake agent\n'))
+// FAKE_AGENT_CONTENT / FAKE_AGENT_REPAIR_CONTENT replace what is written for a fix prompt / a check-failure repair prompt.
+const repairing = prompt.includes('검증 실패 수정 요청')
+const content = (repairing ? process.env.FAKE_AGENT_REPAIR_CONTENT : process.env.FAKE_AGENT_CONTENT) ?? 'edited by fake agent\n'
+if (!answering) for (const target of String(process.env.FAKE_AGENT_EDIT ?? '').split(',').filter(Boolean)) (process.env.FAKE_AGENT_APPEND ? appendFileSync(target, 'another attempt\n') : writeFileSync(target, content))
+if (!answering) for (const target of String(process.env.FAKE_AGENT_DELETE ?? '').split(',').filter(Boolean)) rmSync(target)
+if (!answering && process.env.FAKE_AGENT_COMMIT) execFileSync('git', ['-c', 'user.name=a', '-c', 'user.email=a@a', 'commit', '-q', '-am', 'agent commit'], { cwd: process.env.FAKE_AGENT_COMMIT })
 const sleepMs = Number(process.env.FAKE_AGENT_SLEEP_MS ?? 0)
 if (sleepMs > 0) {
   setTimeout(() => { process.stdout.write('done after sleep\n'); process.exit(Number(process.env.FAKE_AGENT_EXIT ?? 0)) }, sleepMs)

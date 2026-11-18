@@ -22,7 +22,7 @@ import { RunManager, defaultAgentCommands, pickRunToShow, filterIgnoredChanges }
 import { annotateThreads } from './lib/anchor.mjs'
 import {planPublishChecks} from './lib/pre-publish-checks.mjs'
 import {previewWorkingTree,publishWorkingTree} from './lib/working-tree-publish.mjs'
-import {publishWithRepair,repairScope,assertRepairScope,MAX_REPAIR_ROUNDS} from './lib/publish-repair.mjs'
+import {publishWithRepair,repairScope,assertRepairScope,assertNoForeignChanges,findAddedSuppressions,MAX_REPAIR_ROUNDS} from './lib/publish-repair.mjs'
 import {defaultCommitMessage} from './lib/commit-message.mjs'
 import {fixResultEntries} from './lib/fix-results.mjs'
 import { buildPrompt, buildRepairPrompt, completedFixThreads, selectRunnableThreads } from './lib/prompt.mjs'
@@ -276,12 +276,12 @@ export function createServer({
   }
 
   // ---- fix and retry: an AI run repairs a failed detekt/test check, then the publication is attempted again ----
+  // The repair card hangs off the pre-publish checks that failed; with no checks record there is nothing to attach to.
   function updateRepairState(sessionId, change) {
     const session = store.getSession(sessionId)
-    const checks = session.publishChecks ?? { status: 'failed', steps: [] }
-    checks.repair = change === null ? undefined : { max: MAX_REPAIR_ROUNDS, rounds: [], active: false, ...checks.repair, ...change(checks.repair ?? { rounds: [] }) }
-    if (checks.repair === undefined) delete checks.repair
-    session.publishChecks = checks
+    if (!session.publishChecks) return
+    if (change === null) { if (!session.publishChecks.repair) return; delete session.publishChecks.repair }
+    else session.publishChecks.repair = { max: MAX_REPAIR_ROUNDS, rounds: [], active: false, ...session.publishChecks.repair, ...change(session.publishChecks.repair ?? { rounds: [] }) }
     store.save(session)
     publishPanel('pre-publish-repair')
   }
@@ -291,25 +291,36 @@ export function createServer({
     for (;;) {
       const run = runs.get(runId)
       if (run.status !== 'queued' && run.status !== 'running' && !run.committing) return run
-      if (Date.now() > deadline) { runs.cancel(runId); throw new ApiError(504, 'repair_timeout', 'AI 자동 수정이 제한 시간 안에 끝나지 않아 중단했습니다. 커밋·푸시하지 않았습니다.') }
+      if (Date.now() > deadline) { runs.cancel(runId); throw new ApiError(504, 'repair_timeout', 'AI 자동 수정이 제한 시간 안에 끝나지 않아 중단했습니다. 작업 트리에 부분 수정이 남아 있을 수 있습니다. 커밋·푸시하지 않았습니다.') }
       await sleep(repairPollMs)
     }
   }
   async function repairCheckFailure({ sessionId, round, failure, paths }) {
     const session = store.getSession(sessionId)
+    const gitBinary = resolveBin('git') ?? 'git'
+    const headOf = async () => (await git.run(session.repoPath, ['rev-parse', 'HEAD'])).stdout.trim()
+    const headBefore = await headOf()
+    const dirtyBefore = await git.porcelainStatus(session.repoPath)
     const scope = repairScope({ repoPath: session.repoPath, step: failure, selectedPaths: paths })
     const prompt = buildRepairPrompt({ session, step: failure, paths, scopeDirs: scope.dirs, round, maxRounds: MAX_REPAIR_ROUNDS })
     const run = await runs.start({ session, threadIds: [], agent: session.agent || 'claude', prompt, mode: 'fix', nonce: null, meta: { repair: true, repairRound: round, reviewPaths: paths } })
     ensureRunPolling()
     const entry = { round, runId: run.id, agent: run.agent, status: 'fixing', failedStep: { kind: failure.kind, tasks: failure.tasks }, startedAt: now() }
     updateRepairState(sessionId, (previous) => ({ active: true, round, runId: run.id, agent: run.agent, rounds: [...previous.rounds.filter((item) => item.round !== round), entry] }))
-    const settle = (status, extra = {}) => updateRepairState(sessionId, (previous) => ({ rounds: previous.rounds.map((item) => item.round === round ? { ...item, status, endedAt: now(), ...extra } : item) }))
+    const settle = (status, extra = {}) => {
+      try { updateRepairState(sessionId, (previous) => ({ rounds: previous.rounds.map((item) => item.round === round ? { ...item, status, endedAt: now(), ...extra } : item) })) } catch { /* session gone: keep the original error */ }
+    }
+    const partial = '작업 트리에 부분 수정이 남아 있을 수 있습니다. '
     try {
       const finished = await waitForRun(run.id)
-      if (finished.status !== 'succeeded') throw new ApiError(409, finished.status === 'cancelled' ? 'repair_cancelled' : 'repair_failed', `AI 자동 수정 실행이 ${finished.status} 상태로 끝나 중단했습니다. 커밋·푸시하지 않았습니다.`)
+      if (finished.status !== 'succeeded') throw new ApiError(409, finished.status === 'cancelled' ? 'repair_cancelled' : 'repair_failed', `AI 자동 수정 실행이 ${finished.status} 상태로 끝나 중단했습니다. ${partial}커밋·푸시하지 않았습니다.`)
+      if (await headOf() !== headBefore) throw new ApiError(409, 'repair_head_changed', 'AI가 직접 커밋해 HEAD가 바뀌었습니다. 수정 범위를 확인할 수 없어 푸시하지 않고 중단했습니다. 로컬 커밋을 확인하세요.')
       const changed = finished.changedFiles ?? []
       if (!changed.length) throw new ApiError(409, 'repair_no_change', 'AI가 파일을 수정하지 않아 같은 검증 실패가 반복될 것이므로 중단했습니다. 커밋·푸시하지 않았습니다.')
       assertRepairScope(scope, changed)
+      assertNoForeignChanges({ changed, dirtyBefore, selected: paths })
+      const silenced = await findAddedSuppressions({ exec, gitBinary, cwd: session.repoPath, files: changed })
+      if (silenced.length) throw new ApiError(409, 'repair_suppressed_check', `AI가 @Suppress·@Disabled 같은 검증 우회를 추가해 중단했습니다: ${silenced.join(', ')}. 변경은 작업 트리에 남아 있으니 확인하세요. 커밋·푸시하지 않았습니다.`, { files: silenced })
       settle('fixed', { changedFiles: changed })
       return { runId: run.id, changedFiles: changed }
     } catch (error) {
@@ -319,7 +330,7 @@ export function createServer({
   }
   /** `first` is the publication the user asked for; after a failed check it is retried as a working-tree publication over the repaired files. */
   async function publishRepairing({ sessionId, first, paths, messageFor }) {
-    updateRepairState(sessionId, () => ({ active: false, rounds: [], round: 0 }))
+    try { updateRepairState(sessionId, null) } catch { /* session gone */ }
     const gitBinary = resolveBin('git') ?? 'git'
     try {
       return await publishWithRepair({
@@ -329,6 +340,7 @@ export function createServer({
         retry: async (selected) => {
           const fresh = store.getSession(sessionId)
           const preview = await previewWorkingTree({ exec, gitBinary, session: fresh })
+          if (preview.retryCommit) throw new ApiError(409, 'repair_retry_commit', '이전 푸시 실패로 남은 로컬 커밋이 있어 수정 결과를 같은 커밋에 담을 수 없습니다. 푸시를 먼저 재시도하세요.')
           const use = selected.filter((path) => preview.paths.includes(path))
           return publishWorkingTree({ exec, gitBinary, session: fresh, selection: { snapshot: preview.snapshot, paths: use, message: messageFor(preview, use) }, checksOptions: publishChecksOptions(fresh) })
         }
@@ -372,12 +384,13 @@ export function createServer({
     try {
       const result=await publishRepairing({sessionId,paths:selection.paths??[],first:()=>publishWorkingTree({exec,gitBinary:resolveBin('git')??'git',session,selection,checksOptions:publishChecksOptions(session)}),messageFor:()=>selection.message})
       const current=store.getSession(sessionId)
-      current.lastPublication={...result,paths:selection.paths,message:selection.message,verifiedAt:now()}
+      const repaired = (result.repairs ?? []).flatMap((repair) => repair.changedFiles)
+      current.lastPublication={...result,paths:[...new Set([...(selection.paths ?? []), ...repaired])],message:selection.message,verifiedAt:now()}
       delete current.lastPublishError
       store.save(current)
       return result
     } catch(error) {
-      if(error.extra?.commit){const current=store.getSession(sessionId);current.lastPublishError={code:error.code,message:error.message,commit:error.extra.commit,paths:selection.paths,commitMessage:selection.message,at:now()};store.save(current)}
+      if(error.extra?.commit){const current=store.getSession(sessionId);current.lastPublishError={code:error.code,message:error.message,commit:error.extra.commit,paths:[...new Set([...(selection.paths ?? []),...(error.extra.repairs ?? []).flatMap(repair=>repair.changedFiles)])],commitMessage:selection.message,at:now()};store.save(current)}
       throw error
     } finally {publishing.delete(key);publishPanel('publish')}
   }
@@ -921,6 +934,12 @@ export function createServer({
 
   async function listen() {
     for(const session of store.listSessionsFull()){
+      if(session.publishChecks?.repair?.active){
+        const repair=session.publishChecks.repair
+        repair.active=false
+        for(const round of repair.rounds??[])if(round.status==='fixing'){round.status='failed';round.reason='interrupted';round.endedAt=now()}
+        store.save(session)
+      }
       if(session.publishChecks?.status==='running'){
         session.publishChecks.status='interrupted'
         session.publishChecks.endedAt=now()

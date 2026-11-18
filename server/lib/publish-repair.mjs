@@ -1,4 +1,5 @@
-import {isAbsolute,relative,resolve,sep} from 'node:path'
+import {existsSync,readFileSync} from 'node:fs'
+import {isAbsolute,join,relative,resolve,sep} from 'node:path'
 import {ApiError} from './store.mjs'
 import {moduleDirsOfStep} from './pre-publish-checks.mjs'
 
@@ -16,18 +17,59 @@ export function failedStepOf(checks){
 export function repairScope({repoPath,step,selectedPaths=[]}){
  const root=resolve(repoPath)
  return{
+  repoPath:root,
   dirs:moduleDirsOfStep(step).map(dir=>relative(root,resolve(dir)).split(sep).join('/')),
   files:new Set(selectedPaths)
  }
 }
 
+// Files that decide what "passing" means: a repair that edits them changes the rule, not the code. A file the user
+// explicitly selected for publication is theirs to change.
+const PROTECTED=[
+ /(^|\/)(build|settings)\.gradle(\.kts)?$/,
+ /(^|\/)gradle\//,
+ /(^|\/)gradlew(\.bat)?$/,
+ /(^|\/)libs\.versions\.toml$/,
+ /(^|\/)detekt[^/]*\.ya?ml$/i,
+ /(^|\/)[^/]*baseline[^/]*\.xml$/i,
+ /^\.github\//
+]
+
 export function assertRepairScope(scope,changedFiles){
- const outside=changedFiles.filter(path=>{
-  if(typeof path!=='string'||!path||isAbsolute(path)||path.split('/').includes('..'))return true
-  if(scope.files.has(path))return false
-  return!scope.dirs.some(dir=>dir===''||path===dir||path.startsWith(dir+'/'))
- })
- if(outside.length)throw new ApiError(409,'repair_out_of_scope',`AI가 실패한 모듈 밖의 파일을 수정해 자동 수정을 중단했습니다: ${outside.join(', ')}. 변경은 작업 트리에 남아 있으니 확인하세요. 커밋·푸시하지 않았습니다.`,{files:outside})
+ const problems=[]
+ for(const path of changedFiles){
+  if(typeof path!=='string'||!path||isAbsolute(path)||path.split('/').includes('..')){problems.push(`${path} (유효하지 않은 경로)`);continue}
+  const selected=scope.files.has(path)
+  if(!selected&&!scope.dirs.some(dir=>dir===''||path===dir||path.startsWith(dir+'/'))){problems.push(`${path} (실패한 모듈 밖)`);continue}
+  if(!selected&&PROTECTED.some(pattern=>pattern.test(path))){problems.push(`${path} (빌드·detekt 설정 파일)`);continue}
+  if(!existsSync(join(scope.repoPath,path)))problems.push(`${path} (삭제됨)`)
+ }
+ if(problems.length)throw new ApiError(409,'repair_out_of_scope',`AI 수정이 허용 범위를 벗어나 자동 수정을 중단했습니다: ${problems.join(', ')}. 변경은 작업 트리에 남아 있으니 확인하세요. 커밋·푸시하지 않았습니다.`,{files:problems})
+}
+
+/** Changes to files that were already dirty before the repair and that the user did not select: those are the user's own work. */
+export function assertNoForeignChanges({changed,dirtyBefore,selected}){
+ const chosen=new Set(selected),dirty=new Set(dirtyBefore)
+ const foreign=changed.filter(path=>dirty.has(path)&&!chosen.has(path))
+ if(foreign.length)throw new ApiError(409,'repair_out_of_scope',`AI가 선택하지 않은 미커밋 파일을 수정해 자동 수정을 중단했습니다: ${foreign.join(', ')}. 변경은 작업 트리에 남아 있으니 확인하세요. 커밋·푸시하지 않았습니다.`,{files:foreign})
+}
+
+const SUPPRESSION=/@Suppress(Warnings)?\b|@Disabled\b|@Ignore\b|detekt:\s*(disable|suppress)|\bx(it|test|describe)\(|enabled\s*=\s*false/
+
+/** Files where a repair added a suppression, a disabled test or a skipped spec (lines added versus HEAD, or a new file). */
+export async function findAddedSuppressions({exec,gitBinary='git',cwd,files}){
+ if(!files.length)return[]
+ const run=async args=>{const result=await exec(gitBinary,args,{cwd,timeout:60000});if(result.code!==0)throw new ApiError(500,'git_failed',(result.stderr||result.stdout||'git failed').trim());return result.stdout}
+ const found=new Set()
+ let current=null
+ for(const line of (await run(['--literal-pathspecs','diff','HEAD','-U0','--no-ext-diff','--no-textconv','--',...files])).split('\n')){
+  const header=/^\+\+\+ b\/(.+)$/.exec(line)
+  if(header){current=header[1];continue}
+  if(current&&line.startsWith('+')&&!line.startsWith('+++')&&SUPPRESSION.test(line))found.add(current)
+ }
+ const untracked=(await run(['--literal-pathspecs','ls-files','--others','--exclude-standard','-z','--',...files])).split('\0').filter(Boolean)
+ for(const path of untracked)try{if(SUPPRESSION.test(readFileSync(join(cwd,path),'utf8')))found.add(path)}catch{/* unreadable: not a suppression */}
+ return[...found]
 }
 
 /**
@@ -47,7 +89,13 @@ export async function publishWithRepair({first,retry,paths,repair,maxRounds=MAX_
     if(repairs.length&&error&&typeof error==='object')error.extra={...error.extra,repairs}
     throw error
    }
-   const outcome=await repair({round:repairs.length+1,failure,paths:[...known]})
+   let outcome
+   try{outcome=await repair({round:repairs.length+1,failure,paths:[...known]})}
+   catch(repairError){
+    // The check failure and the earlier repairs explain why this repair was attempted: keep them on the error.
+    if(repairError instanceof ApiError)repairError.extra={...repairError.extra,failedStep:{kind:failure.kind,tasks:failure.tasks},repairs}
+    throw repairError
+   }
    repairs.push({round:repairs.length+1,runId:outcome.runId,changedFiles:outcome.changedFiles,failedStep:{kind:failure.kind,tasks:failure.tasks}})
    for(const file of outcome.changedFiles)known.add(file)
    attempt=()=>retry([...known])
