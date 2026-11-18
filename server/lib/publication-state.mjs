@@ -1,7 +1,10 @@
+import {detachedPublishTarget} from './publish-target.mjs'
 // Git evidence is collected by the host, including for read-only AI answer sessions.
 export async function publicationState({exec,cwd,branch,gitBinary='git',now=()=>new Date().toISOString()}) {
  const git=async args=>{try{return await exec(gitBinary,args,{cwd,timeout:12000,env:{...process.env,GIT_TERMINAL_PROMPT:'0',...(process.env.GIT_SSH_COMMAND?{}:{GIT_SSH_COMMAND:'ssh -o BatchMode=yes'})}})}catch{return{code:1,stdout:'',stderr:''}}};
- const [head,current,status,remote]=await Promise.all([git(['rev-parse','HEAD']),git(['rev-parse','--abbrev-ref','HEAD']),git(['status','--porcelain']),git(['config','--get',`branch.${branch}.remote`])]);
+ const detached=branch==='HEAD'?await detachedPublishTarget({exec,gitBinary,cwd}).catch(()=>null):null;
+ if(detached)branch=detached.branch;
+ const [head,current,status,remote]=await Promise.all([git(['rev-parse','HEAD']),git(['rev-parse','--abbrev-ref','HEAD']),git(['status','--porcelain']),detached?{code:0,stdout:detached.remote}:git(['config','--get',`branch.${branch}.remote`])]);
  const localHead=head.code===0&&/^[0-9a-f]{40,64}$/.test(head.stdout.trim())?head.stdout.trim():null,currentBranch=current.code===0?current.stdout.trim():null;
  const changes=status.code===0?status.stdout.trimEnd().split('\n').filter(Boolean):null;
  const remoteName=remote.code===0&&remote.stdout.trim()!=='.'?remote.stdout.trim():'origin',remoteRef=`refs/heads/${branch}`;

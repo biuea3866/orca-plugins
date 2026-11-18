@@ -793,7 +793,7 @@ export function createServer({
       if(segments[2]==='publish-preview' && segments.length===3 && method==='GET'){
         const session=store.getSession(sessionId),plan=await previewWorkingTree({exec,gitBinary:resolveBin('git')??'git',session})
         const suggestion=runs.list().filter(run=>run.cwd===session.repoPath && run.branch===session.branch && run.mode!=='answer' && run.commitMessage && run.changedFiles?.some(path=>plan.paths.includes(path))).sort((a,b)=>b.startedAt.localeCompare(a.startedAt))[0]?.commitMessage
-        if(!plan.retryCommit)plan.message=defaultCommitMessage(session.branch,plan.paths,suggestion)
+        if(!plan.retryCommit)plan.message=defaultCommitMessage(plan.publishBranch,plan.paths,suggestion)
         plan.checks=planPublishChecks(session.repoPath,plan.retryCommit?session.lastPublishError.paths:plan.paths)
         return sendJson(response,200,plan)
       }

@@ -18,6 +18,7 @@ import {join} from 'node:path'
 import { ApiError } from './store.mjs'
 import {defaultCommitMessage,validateCommitMessage} from './commit-message.mjs'
 import { BASE_BRANCH } from './github.mjs'
+import { detachedPublishTarget } from './publish-target.mjs'
 
 const GIT_TIMEOUT_MS = 60_000
 const PUSH_TIMEOUT_MS = 120_000
@@ -47,19 +48,25 @@ export async function publishRun({ exec, gitBinary = 'git', run, session, messag
     return result
   }
 
-  const branch = (await git(['rev-parse', '--abbrev-ref', 'HEAD'])).stdout.trim()
-  if (!branch || branch === 'HEAD') throw new ApiError(400, 'detached_head', 'HEAD is detached; check out the branch before committing')
+  // `current` is what HEAD names ('HEAD' when detached); `branch` is the remote branch that receives the push.
+  const current = (await git(['rev-parse', '--abbrev-ref', 'HEAD'])).stdout.trim()
+  if (!current) throw new ApiError(400, 'detached_head', 'HEAD is detached; check out the branch before committing')
+  const detached = current === 'HEAD' ? await detachedPublishTarget({ exec, gitBinary, cwd }) : null
+  const branch = detached ? detached.branch : current
   const originHead = await git(['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'], { allowFailure: true })
   const defaultBranch = originHead.code === 0 ? originHead.stdout.trim().replace(/^origin\//, '') : null
   if (BASE_BRANCH.test(branch) || branch === defaultBranch) throw new ApiError(400, 'protected_branch', `${branch} is a shared branch; commit and push there by hand`)
-  if (branch !== session.branch) throw new ApiError(400, 'branch_mismatch', `the worktree is on ${branch} but the review session is for ${session.branch}`)
+  if (current !== session.branch) throw new ApiError(400, 'branch_mismatch', `the worktree is on ${current} but the review session is for ${session.branch}`)
 
-  const remoteConfig = await git(['config', '--get', `branch.${branch}.remote`], { allowFailure: true })
-  const mergeConfig = await git(['config', '--get', `branch.${branch}.merge`], { allowFailure: true })
-  const configuredRemote = remoteConfig.code === 0 ? remoteConfig.stdout.trim() : ''
-  const hasUpstream = Boolean(configuredRemote) && configuredRemote !== '.' && mergeConfig.code === 0
-  if (hasUpstream && mergeConfig.stdout.trim() !== `refs/heads/${branch}`) {
-    throw new ApiError(400, 'upstream_mismatch', `${branch} tracks ${configuredRemote}/${mergeConfig.stdout.trim().replace(/^refs\/heads\//, '')}; push by hand so another branch is not updated by accident`)
+  let hasUpstream = Boolean(detached), configuredRemote = detached?.remote ?? ''
+  if (!detached) {
+    const remoteConfig = await git(['config', '--get', `branch.${branch}.remote`], { allowFailure: true })
+    const mergeConfig = await git(['config', '--get', `branch.${branch}.merge`], { allowFailure: true })
+    configuredRemote = remoteConfig.code === 0 ? remoteConfig.stdout.trim() : ''
+    hasUpstream = Boolean(configuredRemote) && configuredRemote !== '.' && mergeConfig.code === 0
+    if (hasUpstream && mergeConfig.stdout.trim() !== `refs/heads/${branch}`) {
+      throw new ApiError(400, 'upstream_mismatch', `${branch} tracks ${configuredRemote}/${mergeConfig.stdout.trim().replace(/^refs\/heads\//, '')}; push by hand so another branch is not updated by accident`)
+    }
   }
   const subject = validateCommitMessage(message ?? defaultCommitMessage(branch,paths,run.commitMessage),branch)
   const remote = hasUpstream ? configuredRemote : 'origin'
@@ -81,7 +88,7 @@ export async function publishRun({ exec, gitBinary = 'git', run, session, messag
   const checkedInput=await sourceFingerprint()
   const checks=await runPublishChecks({exec,cwd,paths,...checksOptions})
   if(await sourceFingerprint()!==checkedInput)throw new ApiError(409,'publication_changed','검증 중 대상 파일이 변경됐습니다. 다시 검증한 뒤 게시하세요. 커밋·푸시하지 않았습니다.')
-  if((await git(['rev-parse','HEAD'])).stdout.trim()!==headBefore || (await git(['rev-parse','--abbrev-ref','HEAD'])).stdout.trim()!==branch)throw new ApiError(409,'publication_changed','검증 중 HEAD 또는 브랜치가 변경됐습니다. 커밋·푸시하지 않았습니다.')
+  if((await git(['rev-parse','HEAD'])).stdout.trim()!==headBefore || (await git(['rev-parse','--abbrev-ref','HEAD'])).stdout.trim()!==current)throw new ApiError(409,'publication_changed','검증 중 HEAD 또는 브랜치가 변경됐습니다. 커밋·푸시하지 않았습니다.')
   let commit = headBefore
   if(run.committed?.commit && run.committed.commit!==headBefore)refuse('HEAD moved after this run was committed; review before pushing')
   if (!(run.committed?.commit===headBefore || (run.publishError?.commit && run.publishError.commit === headBefore))) {
@@ -97,7 +104,7 @@ export async function publishRun({ exec, gitBinary = 'git', run, session, messag
       if(validateBeforeCommit)await validateBeforeCommit()
       if(await sourceFingerprint()!==checkedInput)throw new ApiError(409,'publication_changed','검증 후 파일이 변경됐습니다. 다시 검증하세요. 커밋·푸시하지 않았습니다.')
       const currentHead=(await git(['rev-parse','HEAD'])).stdout.trim(),currentBranch=(await git(['rev-parse','--abbrev-ref','HEAD'])).stdout.trim()
-      if(currentHead!==headBefore||currentBranch!==branch)throw new ApiError(409,'repository_changed','커밋 준비 중 브랜치 또는 HEAD가 바뀌었습니다. 상태를 확인하고 다시 시도하세요.')
+      if(currentHead!==headBefore||currentBranch!==current)throw new ApiError(409,'repository_changed','커밋 준비 중 브랜치 또는 HEAD가 바뀌었습니다. 상태를 확인하고 다시 시도하세요.')
       const threads = (run.threadIds ?? []).length
       const committed = await git(['commit','-q','-m',subject,'-m',`Local Self Review ${run.id} · 스레드 ${threads}개${run.agent ? ` (${run.agent})` : ''}`],{allowFailure:true,env:indexEnv})
       if(committed.code!==0){const text=`${committed.stdout ?? ''}${committed.stderr ?? ''}`.trim();throw new ApiError(400,/nothing (added )?to commit|no changes added/i.test(text)?'nothing_to_commit':'commit_failed',text||'git commit failed')}
