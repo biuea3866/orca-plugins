@@ -74,6 +74,8 @@ export async function publishRun({ exec, gitBinary = 'git', run, session, messag
   // Refuse a known divergent remote before changing either history or the user's index.
   const remoteState = await git(['ls-remote','--heads','--',remote,`refs/heads/${branch}`], {allowFailure:true,timeout:PUSH_TIMEOUT_MS,env:{...process.env,GIT_TERMINAL_PROMPT:'0',...(process.env.GIT_SSH_COMMAND?{}:{GIT_SSH_COMMAND:'ssh -o BatchMode=yes'})}})
   const remoteTip = remoteState.code===0 ? remoteState.stdout.split('\n').map(line=>line.split(/\s+/)).find(parts=>parts[1]===`refs/heads/${branch}`)?.[0] : null
+  // A detached review targets a branch that existed on the remote; a missing one was merged or deleted meanwhile.
+  if (detached && !remoteTip) throw new ApiError(409, 'remote_branch_missing', `${remote}/${branch} 원격 브랜치를 찾지 못했습니다. 머지·삭제됐는지 확인하세요. 커밋·푸시하지 않았습니다.`)
   if(remoteTip && (await git(['merge-base','--is-ancestor',remoteTip,'HEAD'],{allowFailure:true})).code!==0)throw new ApiError(409,'non_fast_forward','원격 이력이 현재 로컬 HEAD에 포함되어 있지 않습니다. 리베이스·동기화 상태를 확인하세요. 이 도구는 강제 푸시하지 않습니다.')
 
   // A previous attempt that committed but failed to push left its commit at HEAD: only the push is repeated.

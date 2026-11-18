@@ -191,3 +191,26 @@ test('bridge maintenance never creates terminals for worktrees Orca does not kno
     assert.ok(!created.some((entry) => entry === `path:${temp}`), `no bridge for the temp worktree: ${created}`)
   } finally { await maintained.close() }
 })
+
+test('a running bridge is recognised when Orca lists the worktree through a symlinked path', async () => {
+  const real = realpathSync(mkdtempSync(join(tmpdir(), 'sr-link-real-'))), linkRoot = realpathSync(mkdtempSync(join(tmpdir(), 'sr-link-'))), linked = join(linkRoot, 'wt')
+  execFileSync('git', ['init', '-q', '-b', 'main', real]); execFileSync('git', ['-C', real, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init'])
+  execFileSync('ln', ['-s', real, linked])
+  const created = []
+  const linkRunners = { exec: async (command, args, options) => {
+    if (command.endsWith('git')) return execCommand(command, args, options)
+    if (args[0] === 'repo') return { stdout: JSON.stringify({ ok: true, result: { repos: [{ id: 'rl', path: linked, displayName: 'linked', gitRemoteIdentity: null }] } }), stderr: '', code: 0 }
+    if (args[0] === 'worktree') return { stdout: JSON.stringify({ ok: true, result: { worktrees: [{ id: `rl::${linked}`, repoId: 'rl', path: linked, branch: 'refs/heads/main', displayName: 'main' }] } }), stderr: '', code: 0 }
+    if (args[0] === 'terminal' && args[1] === 'list') return { stdout: JSON.stringify({ ok: true, result: { terminals: [{ handle: 'term_l', ptyId: 'pty_l', worktreePath: linked, title: 'Self Review bridge' }] } }), stderr: '', code: 0 }
+    if (args[0] === 'terminal' && args[1] === 'create') { created.push(args); return { stdout: JSON.stringify({ ok: true, result: { terminal: { handle: 'term_x' } } }), stderr: '', code: 0 } }
+    return { stdout: '', stderr: 'unexpected', code: 1 }
+  } }
+  const linkedServer = createServer({ homeDir: mkdtempSync(join(tmpdir(), 'sr-lhome-')), pluginRoot, runners: linkRunners, preferredPort: 0, idleMs: 0, exitImpl: () => {}, bridgeMaintenanceMs: 150, panelDebounceMs: 0 })
+  await linkedServer.listen()
+  try {
+    const status = await fetch(`http://127.0.0.1:${linkedServer.port}/api/sessions`, { method: 'POST', headers: { 'X-SR-Token': linkedServer.token, 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: 'local', repoPath: linked, baseRef: 'main' }) }).then((r) => r.status)
+    assert.equal(status, 201)
+    await wait(900)
+    assert.deepEqual(created, [], 'the bridge listed under the Orca path is the running one')
+  } finally { await linkedServer.close() }
+})

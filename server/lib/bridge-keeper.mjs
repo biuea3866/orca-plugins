@@ -11,13 +11,13 @@ function filterAlive(terminals, registeredIds) {
   return registeredIds.filter((id) => live.has(id))
 }
 
-// A bridge terminal is titled with its command (the quoted launcher path, cut at the first space) and prints a
-// banner; either identifies one that has not registered its ids yet, so a slow registration never spawns a second one.
+// A bridge terminal is titled with its command (the quoted launcher path, cut at the first space); that identifies one
+// that has not registered its ids yet, so a slow registration never spawns a second one. Output is not used: any shell
+// can print the bridge banner.
 function runningBridges(terminals, worktreePath, launcherPath) {
   const command = shellQuote(launcherPath)
   return terminals.filter((terminal) => terminal.worktreePath === worktreePath
-    && ((typeof terminal.title === 'string' && terminal.title.length > 1 && command.startsWith(terminal.title)) || terminal.title === 'Self Review bridge'
-      || (typeof terminal.preview === 'string' && terminal.preview.includes('패널 브리지'))))
+    && ((typeof terminal.title === 'string' && terminal.title.length >= 8 && command.startsWith(terminal.title)) || terminal.title === 'Self Review bridge'))
 }
 
 export class BridgeKeeper {

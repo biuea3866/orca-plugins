@@ -136,7 +136,7 @@ test('a live bridge is never counted against the cap', async () => {
 })
 
 test('ensure treats a running bridge terminal of the worktree as alive even before its ids are registered', async () => {
-  const bridge = { handle: 'term_b', ptyId: 'pty_b', worktreePath: '/w', title: "'/home/bin/open-review'", preview: 'Local Self Review — 패널 브리지' }
+  const bridge = { handle: 'term_b', ptyId: 'pty_b', worktreePath: '/w', title: "'/home/bin/open-review'" }
   const { keeper, calls } = makeKeeper({ terminals: [bridge] })
   const result = await keeper.ensure('/w', [])
   assert.equal(result.created, false)
@@ -148,5 +148,11 @@ test('ensure treats a running bridge terminal of the worktree as alive even befo
 test('a bridge terminal of another worktree does not count as running', async () => {
   const bridge = { handle: 'term_b', ptyId: 'pty_b', worktreePath: '/elsewhere', title: "'/home/bin/open-review'", preview: 'Local Self Review — 패널 브리지' }
   const { keeper } = makeKeeper({ terminals: [bridge] })
+  assert.equal((await keeper.ensure('/w', [])).created, true)
+})
+
+test('a shell that merely printed the bridge banner does not count as a running bridge', async () => {
+  const shell = { handle: 'term_s', ptyId: 'pty_s', worktreePath: '/w', title: 'zsh', preview: 'Local Self Review — 패널 브리지' }
+  const { keeper } = makeKeeper({ terminals: [shell] })
   assert.equal((await keeper.ensure('/w', [])).created, true)
 })

@@ -7,6 +7,7 @@ import { execFileSync } from 'node:child_process'
 import { publishRun } from '../server/lib/publish.mjs'
 import { previewWorkingTree, publishWorkingTree } from '../server/lib/working-tree-publish.mjs'
 import { publicationState } from '../server/lib/publication-state.mjs'
+import { detachedPublishTarget } from '../server/lib/publish-target.mjs'
 import { execCommand } from '../server/lib/exec.mjs'
 
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim()
@@ -81,4 +82,35 @@ test('the publication state of a detached review compares HEAD with the reviewed
   const state = await publicationState({ exec, cwd: review, branch: 'HEAD' })
   assert.equal(state.remoteRef, `refs/heads/${branch}`)
   assert.equal(state.state, 'remote-verified')
+})
+
+test('a detached review whose remote branch was deleted is refused instead of recreating it', async () => {
+  const { remote, review, branch } = detachedReview()
+  git(remote, 'update-ref', '-d', `refs/heads/${branch}`)
+  const head = git(review, 'rev-parse', 'HEAD')
+  await assert.rejects(publishRun({ exec, run: fixRun(review), session: { repoPath: review, branch: 'HEAD' } }), (error) => error.code === 'remote_branch_missing')
+  assert.equal(git(review, 'rev-parse', 'HEAD'), head, 'nothing was committed')
+  assert.equal(execFileSync('git', ['ls-remote', '--heads', remote, branch], { encoding: 'utf8' }).trim(), '', 'the branch was not recreated')
+})
+
+test('the uncommitted-changes preview of a detached worktree without a declared branch still opens', async () => {
+  const { review } = detachedReview({ target: null })
+  const preview = await previewWorkingTree({ exec, session: { repoPath: review, branch: 'HEAD' } })
+  assert.equal(preview.publishBranch, null)
+  assert.deepEqual(preview.paths, ['a.js'])
+})
+
+test('the declared publish target is resolved for local, tracked and malformed refs', async () => {
+  const { work, review, branch } = detachedReview()
+  const marker = resolve(review, git(review, 'rev-parse', '--git-path', 'self-review-publish-target'))
+  const target = (ref) => { writeFileSync(marker, `${ref}\n`); return detachedPublishTarget({ exec, cwd: review }) }
+  git(work, 'branch', '--track', 'local-same', `origin/${branch}`)
+  git(work, 'config', 'branch.local-same.merge', 'refs/heads/local-same')
+  assert.deepEqual(await target('refs/heads/local-same'), { remote: 'origin', branch: 'local-same' }, 'a tracked local branch pushes to its upstream')
+  git(work, 'branch', '--track', 'local-other', `origin/${branch}`)
+  await assert.rejects(target('refs/heads/local-other'), (error) => error.code === 'invalid_publish_target', 'a local branch tracking another name is refused')
+  git(work, 'branch', '--no-track', 'local-untracked', `origin/${branch}`)
+  assert.deepEqual(await target('refs/heads/local-untracked'), { remote: 'origin', branch: 'local-untracked' }, 'an untracked local branch goes to origin')
+  for (const bad of ['refs/remotes/origin/HEAD', 'refs/remotes/nowhere/x', 'refs/remotes/origin/a..b', 'refs/tags/v1', 'HEAD'])
+    await assert.rejects(target(bad), (error) => error.code === 'invalid_publish_target', bad)
 })
